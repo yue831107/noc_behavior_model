@@ -1,0 +1,18 @@
+# NoC Behavior Model Dependencies
+
+# Configuration
+pyyaml>=6.0
+
+# Numerical computation
+numpy>=1.24
+
+# Type hints (Python 3.10+ has most built-in)
+typing_extensions>=4.0
+
+# Testing
+pytest>=7.0
+pytest-cov>=4.0
+
+# Optional: Visualization
+matplotlib>=3.7
+# plotly>=5.0  # For interactive dashboard (Phase 4)

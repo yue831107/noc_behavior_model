@@ -1,0 +1,10 @@
+# Transpose Traffic Pattern
+# Swap X and Y coordinates: (x, y) -> (y, x)
+traffic:
+  pattern: "transpose"
+  mesh_cols: 5
+  mesh_rows: 4
+  transfer_size: 4096
+  local_src_addr: 0x0000
+  local_dst_addr: 0x1000
+  random_seed: 42

@@ -1,0 +1,34 @@
+# Host to NoC - Scatter Write Test
+# Distributes different data portions to different nodes
+
+# System configuration
+topology:
+  mesh_rows: 4
+  mesh_cols: 5
+  edge_column: 0
+
+router:
+  buffer_depth: 4
+
+# Transfer configuration
+transfer:
+  src_addr: 0x0000          # Host memory source address
+  src_size: 1024            # Total data size (256 bytes per node)
+  dst_addr: 0x1000          # Local memory destination address
+  target_nodes: [0, 1, 2, 3]  # Scatter to 4 nodes
+
+  # AXI burst settings
+  max_burst_len: 16
+  beat_size: 8
+  max_outstanding: 8
+
+  # Transfer mode
+  transfer_mode: "scatter"
+
+  # Pacing
+  inter_txn_delay: 0
+
+# Simulation settings
+simulation:
+  max_cycles: 10000
+  verbose: false

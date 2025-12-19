@@ -1,0 +1,10 @@
+# Shuffle Traffic Pattern
+# Perfect shuffle permutation: left rotate bits of node ID
+traffic:
+  pattern: "shuffle"
+  mesh_cols: 5
+  mesh_rows: 4
+  transfer_size: 4096
+  local_src_addr: 0x0000
+  local_dst_addr: 0x1000
+  random_seed: 42

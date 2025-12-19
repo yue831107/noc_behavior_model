@@ -1,0 +1,38 @@
+# Host to NoC - Gather Read Test
+# Collects different data from multiple nodes into Host memory
+
+# System configuration
+topology:
+  mesh_rows: 4
+  mesh_cols: 5
+  edge_column: 0
+
+router:
+  buffer_depth: 4
+
+# Transfer configuration
+transfer:
+  # Source settings (for write phase)
+  src_addr: 0x0000
+  src_size: 1024
+
+  # Read settings
+  read_src_addr: 0x1000     # Address to read from in Local Memory
+  read_size: 1024           # Total bytes to gather (256 per node)
+  target_nodes: [0, 1, 2, 3]  # Gather from 4 nodes
+
+  # AXI burst settings
+  max_burst_len: 16
+  beat_size: 8
+  max_outstanding: 8
+
+  # Transfer mode
+  transfer_mode: "gather"
+
+  # Pacing
+  inter_txn_delay: 0
+
+# Simulation settings
+simulation:
+  max_cycles: 10000
+  verbose: false

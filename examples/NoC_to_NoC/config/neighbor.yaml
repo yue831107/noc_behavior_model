@@ -1,0 +1,10 @@
+# Neighbor Traffic Pattern
+# Ring topology: node i sends to node (i+1) % N
+traffic:
+  pattern: "neighbor"
+  mesh_cols: 5
+  mesh_rows: 4
+  transfer_size: 4096
+  local_src_addr: 0x0000
+  local_dst_addr: 0x1000
+  random_seed: 42

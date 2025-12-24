@@ -1,0 +1,36 @@
+{
+    "test_name": "neighbor_pattern_16nodes_256bytes",
+    "description": "Ring pattern with 16 compute nodes, 256 bytes transfer each",
+    "config": {
+        "pattern": "neighbor",
+        "nodes": 16,
+        "transfer_size": 256,
+        "mesh_cols": 5,
+        "mesh_rows": 4
+    },
+    "expected_metrics": {
+        "total_cycles": {
+            "min": 25,
+            "max": 40,
+            "target": 33
+        },
+        "avg_latency": {
+            "min": 2.0,
+            "max": 4.0,
+            "target": 2.5
+        },
+        "throughput": {
+            "min": 220,
+            "max": 270,
+            "target": 248
+        },
+        "buffer_utilization": {
+            "min": 0.1,
+            "max": 0.6,
+            "target": 0.35
+        }
+    },
+    "notes": "Baseline to be established from multiple runs. These are placeholder values.",
+    "created_date": "2025-12-22",
+    "last_updated": "2025-12-22"
+}

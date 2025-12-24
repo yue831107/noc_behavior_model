@@ -22,7 +22,8 @@ SEED = 42
 # Phony targets
 .PHONY: help gen_payload gen_noc_payload sim_write sim_read sim_scatter sim_gather sim_all \
         sim_noc sim_noc_neighbor sim_noc_shuffle sim_noc_bit_reverse sim_noc_random sim_noc_transpose sim_noc_all \
-        test test_unit test_integration test_coverage clean clean_payload clean_noc_payload all quick \
+        test test_unit test_integration test_coverage test_performance test_theory test_consistency test_performance_report \
+        clean clean_payload clean_noc_payload all quick \
         viz_heatmap viz_latency viz_throughput viz_curves viz_dashboard viz_all viz_save
 
 # Default target
@@ -54,6 +55,9 @@ help:
 	@echo "  make test                     Run all pytest tests"
 	@echo "  make test_unit                Unit tests only"
 	@echo "  make test_integration         Integration tests only"
+	@echo "  make test_performance         Performance validation tests"
+	@echo "  make test_theory              Theory-based validation only"
+	@echo "  make test_consistency         Consistency validation only"
 	@echo ""
 	@echo "[Utilities]"
 	@echo "  make clean                    Clean all generated files"
@@ -135,6 +139,19 @@ test_integration:
 
 test_coverage:
 	$(PYTHON) -m pytest tests/ --cov=src --cov-report=term-missing
+
+# Performance Validation
+test_performance:
+	$(PYTHON) -m pytest tests/performance/ -v
+
+test_theory:
+	$(PYTHON) -m pytest tests/performance/test_theory_validation.py -v
+
+test_consistency:
+	$(PYTHON) -m pytest tests/performance/test_consistency_validation.py -v
+
+test_performance_report:
+	$(PYTHON) -m pytest tests/performance/ -v --html=output/performance_report.html --self-contained-html
 
 # Cleaning
 clean_payload:

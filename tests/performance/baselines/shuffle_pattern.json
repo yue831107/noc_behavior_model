@@ -1,0 +1,36 @@
+{
+    "test_name": "shuffle_pattern_16nodes_256bytes",
+    "description": "Shuffle pattern (bit rotation) with 16 nodes, 256 bytes each",
+    "config": {
+        "pattern": "shuffle",
+        "nodes": 16,
+        "transfer_size": 256,
+        "mesh_cols": 5,
+        "mesh_rows": 4
+    },
+    "expected_metrics": {
+        "total_cycles": {
+            "min": 30,
+            "max": 50,
+            "target": 38
+        },
+        "avg_latency": {
+            "min": 2.5,
+            "max": 5.0,
+            "target": 3.5
+        },
+        "throughput": {
+            "min": 200,
+            "max": 250,
+            "target": 225
+        },
+        "buffer_utilization": {
+            "min": 0.2,
+            "max": 0.7,
+            "target": 0.45
+        }
+    },
+    "notes": "Shuffle pattern has longer average hop distance than neighbor",
+    "created_date": "2025-12-22",
+    "last_updated": "2025-12-22"
+}

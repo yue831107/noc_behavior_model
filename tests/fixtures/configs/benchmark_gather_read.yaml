@@ -1,0 +1,183 @@
+# Performance Benchmark - Gather Read (High Stress)
+#
+# Purpose: Performance validation benchmark for parameter sweep
+# Pattern: All 16 nodes respond to host simultaneously (fan-in traffic)
+# This creates maximum response path contention to stress buffer utilization
+#
+# Expected behavior:
+# - With low buffer_depth: Higher latency due to backpressure
+# - With high buffer_depth: Better throughput, lower latency
+# - max_outstanding affects how many transactions can be in flight
+
+# Multiple sequential gather operations to build sustained load
+transfers:
+  # === Phase 1: Warm-up (smaller transfers) ===
+  - src_addr: '0x0000'
+    src_size: 512
+    dst_addr: '0x1000'
+    read_src_addr: '0x1000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x0200'
+    src_size: 512
+    dst_addr: '0x1200'
+    read_src_addr: '0x1200'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  # === Phase 2: Main load (medium transfers) ===
+  - src_addr: '0x0400'
+    src_size: 1024
+    dst_addr: '0x2000'
+    read_src_addr: '0x2000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x0800'
+    src_size: 1024
+    dst_addr: '0x2400'
+    read_src_addr: '0x2400'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x0C00'
+    src_size: 1024
+    dst_addr: '0x2800'
+    read_src_addr: '0x2800'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x1000'
+    src_size: 1024
+    dst_addr: '0x2C00'
+    read_src_addr: '0x2C00'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  # === Phase 3: Sustained load (larger transfers) ===
+  - src_addr: '0x1400'
+    src_size: 2048
+    dst_addr: '0x3000'
+    read_src_addr: '0x3000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x1C00'
+    src_size: 2048
+    dst_addr: '0x3800'
+    read_src_addr: '0x3800'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x2400'
+    src_size: 2048
+    dst_addr: '0x4000'
+    read_src_addr: '0x4000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x2C00'
+    src_size: 2048
+    dst_addr: '0x4800'
+    read_src_addr: '0x4800'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  # === Phase 4: Peak load (large transfers) ===
+  - src_addr: '0x3400'
+    src_size: 4096
+    dst_addr: '0x5000'
+    read_src_addr: '0x5000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x4400'
+    src_size: 4096
+    dst_addr: '0x6000'
+    read_src_addr: '0x6000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x5400'
+    src_size: 4096
+    dst_addr: '0x7000'
+    read_src_addr: '0x7000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x6400'
+    src_size: 4096
+    dst_addr: '0x8000'
+    read_src_addr: '0x8000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  # === Phase 5: Cool-down (medium transfers) ===
+  - src_addr: '0x7400'
+    src_size: 2048
+    dst_addr: '0x9000'
+    read_src_addr: '0x9000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x7C00'
+    src_size: 2048
+    dst_addr: '0x9800'
+    read_src_addr: '0x9800'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x8400'
+    src_size: 1024
+    dst_addr: '0xA000'
+    read_src_addr: '0xA000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x8800'
+    src_size: 1024
+    dst_addr: '0xA400'
+    read_src_addr: '0xA400'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x8C00'
+    src_size: 512
+    dst_addr: '0xA800'
+    read_src_addr: '0xA800'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+  - src_addr: '0x8E00'
+    src_size: 512
+    dst_addr: '0xAA00'
+    read_src_addr: '0xAA00'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+
+# Summary:
+# - 20 transfers total
+# - Total data: 512*2 + 1024*4 + 2048*4 + 4096*4 + 2048*2 + 1024*2 + 512*2 = 36864 bytes
+# - Each transfer goes to/from all 16 nodes
+# - Pattern: fan-in (gather) creates response path congestion

@@ -17,9 +17,9 @@ from src.config import (
     NodeTransferConfig,
 )
 from src.traffic.pattern_generator import TrafficPatternGenerator
-from src.core.local_axi_master import LocalAXIMaster, LocalTransferConfig
-from src.core.node_controller import NodeController
-from src.core.memory import Memory, MemoryConfig
+from src.testbench import LocalAXIMaster, LocalTransferConfig
+from src.testbench import NodeController
+from src.testbench import Memory, MemoryConfig
 
 
 class TestTrafficPatternGenerator:

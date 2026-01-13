@@ -23,7 +23,7 @@ def extract_metrics_from_simulation(system: Any) -> Dict[str, Any]:
         Dictionary containing performance metrics
     """
     # Import here to avoid circular dependency
-    from src.core.metrics_provider import get_metrics_from_system
+    from src.verification.metrics_provider import get_metrics_from_system
     
     # Get raw metrics from system
     raw_metrics = get_metrics_from_system(system)

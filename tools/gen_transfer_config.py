@@ -135,14 +135,20 @@ def generate_random_transfers(
     return transfers
 
 
-def to_yaml(transfers: List[TransferSpec], seed: int, output_path: Path) -> None:
+def to_yaml(
+    transfers: List[TransferSpec],
+    seed: int,
+    output_path: Path,
+    sweep_params: dict = None,
+) -> None:
     """
     Write transfers to YAML file.
-    
+
     Args:
         transfers: List of TransferSpec objects.
         seed: Seed used for generation.
         output_path: Output file path.
+        sweep_params: Optional sweep parameters for multi_para execution.
     """
     # Convert to dicts with hex addresses
     transfer_dicts = []
@@ -160,9 +166,13 @@ def to_yaml(transfers: List[TransferSpec], seed: int, output_path: Path) -> None
         if t.transfer_mode == "gather":
             d["read_src_addr"] = f"0x{t.read_src_addr:04X}"
         transfer_dicts.append(d)
-    
+
     data = {"transfers": transfer_dicts}
-    
+
+    # Add sweep parameters if provided
+    if sweep_params:
+        data["sweep"] = sweep_params
+
     # Add header comment
     header = f"""# Auto-generated Transfer Configuration
 # Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -171,16 +181,23 @@ def to_yaml(transfers: List[TransferSpec], seed: int, output_path: Path) -> None
 # Total data: {sum(t.src_size for t in transfers)} bytes
 
 """
-    
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(header)
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-    
+
     print(f"Generated {len(transfers)} transfer configs")
     print(f"  Output: {output_path}")
     print(f"  Seed: {seed}")
     print(f"  Total data: {sum(t.src_size for t in transfers)} bytes")
+    if sweep_params:
+        print(f"  Sweep params: {list(sweep_params.keys())}")
+
+
+def parse_sweep_param(value: str) -> List:
+    """Parse sweep parameter value like '2,4,8,16' into list."""
+    return [int(x) for x in value.split(',')]
 
 
 def main():
@@ -192,9 +209,13 @@ Examples:
   python gen_transfer_config.py -n 10
   python gen_transfer_config.py -n 5 --seed 123 --mode broadcast
   python gen_transfer_config.py -n 20 --min-size 512 --max-size 8192
+
+Multi-parameter sweep:
+  python gen_transfer_config.py -n 10 --sweep-buffer-depth 2,4,8,16
+  python gen_transfer_config.py -n 10 --sweep-buffer-depth 2,4,8 --sweep-mesh-cols 3,4,5
 """
     )
-    
+
     parser.add_argument(
         '-n', '--num',
         type=int,
@@ -237,9 +258,29 @@ Examples:
         default='examples/Host_to_NoC/config/generated.yaml',
         help='Output YAML file path'
     )
-    
+
+    # Sweep parameters
+    parser.add_argument(
+        '--sweep-buffer-depth',
+        type=str,
+        default=None,
+        help='Buffer depth values to sweep, comma-separated (e.g., 2,4,8,16)'
+    )
+    parser.add_argument(
+        '--sweep-mesh-cols',
+        type=str,
+        default=None,
+        help='Mesh columns to sweep, comma-separated (e.g., 3,4,5)'
+    )
+    parser.add_argument(
+        '--sweep-mesh-rows',
+        type=str,
+        default=None,
+        help='Mesh rows to sweep, comma-separated (e.g., 3,4,5)'
+    )
+
     args = parser.parse_args()
-    
+
     # Generate transfers
     transfers = generate_random_transfers(
         count=args.num,
@@ -249,11 +290,25 @@ Examples:
         mode=args.mode,
         seed=args.seed,
     )
-    
+
+    # Build sweep parameters
+    sweep_params = {}
+    if args.sweep_buffer_depth:
+        sweep_params['buffer_depth'] = parse_sweep_param(args.sweep_buffer_depth)
+    if args.sweep_mesh_cols:
+        sweep_params['mesh_cols'] = parse_sweep_param(args.sweep_mesh_cols)
+    if args.sweep_mesh_rows:
+        sweep_params['mesh_rows'] = parse_sweep_param(args.sweep_mesh_rows)
+
     # Write to YAML
     output_path = Path(args.output)
-    to_yaml(transfers, args.seed, output_path)
-    
+    to_yaml(
+        transfers,
+        args.seed,
+        output_path,
+        sweep_params=sweep_params if sweep_params else None,
+    )
+
     # Print summary
     print()
     print("Transfer summary:")

@@ -13,7 +13,7 @@ from typing import List, Tuple
 
 from src.core.router import Direction, XYRouter, PortWire, RouterConfig, Router
 from src.core.ni import MasterNI, NIConfig
-from src.core.flit import Flit, FlitType, FlitFactory
+from src.core.flit import Flit, AxiChannel, FlitFactory
 
 from tests.conftest import run_multi_router_cycle
 
@@ -325,7 +325,7 @@ class TestMultiFlitPacketPath:
             r1.ports[Direction.WEST].receive(flit)
 
         # Run cycles
-        received = []
+        received_flits = []
         for _ in range(10):
             r1.sample_all_inputs()
             r1.clear_all_input_signals()
@@ -335,15 +335,18 @@ class TestMultiFlitPacketPath:
             # Check LOCAL output
             local_port = r1.ports[Direction.LOCAL]
             if local_port.out_valid and local_port.out_flit is not None:
-                received.append(local_port.out_flit.flit_type)
+                received_flits.append(local_port.out_flit)
                 local_port.in_ready = True
                 local_port.clear_output_if_accepted()
 
         # Verify all flits arrived in order
-        if len(received) >= 3:
-            assert received[0] == FlitType.HEAD
-            assert received[1] == FlitType.BODY
-            assert received[2] == FlitType.TAIL
+        assert len(received_flits) >= 3, f"Expected 3 flits, got {len(received_flits)}"
+
+        # Verify packet structure:
+        # - First flit should NOT be last (packet continues)
+        # - Last flit should have last=True
+        assert received_flits[0].hdr.last is False, "First flit should not be last"
+        assert received_flits[-1].hdr.last is True, "Last flit should have last=True"
 
 
 class TestPathLatency:

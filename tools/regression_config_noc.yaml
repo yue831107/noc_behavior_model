@@ -1,0 +1,33 @@
+# Regression Test Configuration - NoC-to-NoC Mode
+#
+# This configuration tests pure Mesh performance using node-to-node communication.
+# Measures latency without Routing Selector overhead.
+#
+# Usage:
+#   py -3 tools/run_regression.py --config tools/regression_config_noc.yaml
+#   py -3 tools/run_regression.py --config tools/regression_config_noc.yaml --early-stop
+
+# Performance Target
+target:
+  max_latency: 100         # Maximum acceptable latency (cycles)
+  min_throughput: 15       # Minimum acceptable throughput (bytes/cycle)
+  latency_weight: 0.5
+  throughput_weight: 0.5
+  max_buffer_utilization: 0.9
+
+# Parameter Space
+parameter_space:
+  mesh_rows: [4]                    # Fixed: 4 rows
+  mesh_cols: [5]                    # Fixed: 5 cols
+  buffer_depth: [4, 8, 16, 32]      # Sweep: buffer depth
+  max_outstanding: [8, 16, 32]      # Sweep: max outstanding
+  flit_width_bytes: 8
+
+# Workload Configuration (NoC-to-NoC specific)
+workload:
+  transfer_size: 256                # Size of each transfer (bytes)
+  traffic_pattern: neighbor         # neighbor, shuffle, bit_reverse, random, transpose
+
+# System Type - NoC-to-NoC
+# Measures pure Mesh performance: Node -> Router -> Mesh -> Router -> Node
+system_type: "noc_to_noc"

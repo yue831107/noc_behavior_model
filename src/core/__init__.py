@@ -2,10 +2,18 @@
 
 from .flit import (
     Flit,
-    FlitType,
     FlitHeader,
     FlitFactory,
+    AxiChannel,
+    AxiAwPayload,
+    AxiWPayload,
+    AxiArPayload,
+    AxiBPayload,
+    AxiRPayload,
+    FlitPayload,
     create_response_flit,
+    encode_node_id,
+    decode_node_id,
 )
 from .buffer import (
     Buffer,
@@ -32,6 +40,7 @@ from .router import (
     RespRouter,
     Router,
     EdgeRouter,
+    PortWire,
     create_router,
 )
 from .ni import (
@@ -59,39 +68,35 @@ from .routing_selector import (
     V1System,
     NoCSystem,
 )
-from .local_axi_master import (
+
+# Re-export from testbench for backward compatibility
+from src.testbench import (
     LocalAXIMasterState,
     LocalTransferConfig,
     LocalAXIMaster,
-)
-from .node_controller import (
     NodeController,
     NodeControllerStats,
-)
-from .memory import (
     MemoryConfig,
     Memory,
     MemoryStats,
     HostMemory,
     LocalMemory,
     MemoryCopyDescriptor,
-)
-from .axi_master import (
     AXIIdConfig,
     AXIIdGenerator,
     AXIMasterState,
     PendingTransaction,
     AXIMasterStats,
     AXIMasterController,
-)
-from .host_axi_master import (
     HostAXIMasterState,
     AXIChannelPort,
     AXIResponsePort,
     HostAXIMasterStats,
     HostAXIMaster,
 )
-from .golden_manager import (
+
+# Re-export from verification for backward compatibility
+from src.verification import (
     GoldenKey,
     GoldenSource,
     GoldenManager,
@@ -103,10 +108,18 @@ from .golden_manager import (
 __all__ = [
     # Flit
     "Flit",
-    "FlitType",
     "FlitHeader",
     "FlitFactory",
+    "AxiChannel",
+    "AxiAwPayload",
+    "AxiWPayload",
+    "AxiArPayload",
+    "AxiBPayload",
+    "AxiRPayload",
+    "FlitPayload",
     "create_response_flit",
+    "encode_node_id",
+    "decode_node_id",
     # Buffer
     "Buffer",
     "FlitBuffer",
@@ -130,6 +143,7 @@ __all__ = [
     "RespRouter",
     "Router",
     "EdgeRouter",
+    "PortWire",
     "create_router",
     # NI
     "NIConfig",
@@ -151,34 +165,30 @@ __all__ = [
     "RoutingSelector",
     "V1System",
     "NoCSystem",
-    # Local AXI Master (NoC-to-NoC)
+    # Backward compatibility re-exports from testbench
     "LocalAXIMasterState",
     "LocalTransferConfig",
     "LocalAXIMaster",
-    # Node Controller (NoC-to-NoC)
     "NodeController",
     "NodeControllerStats",
-    # Memory
     "MemoryConfig",
     "Memory",
     "MemoryStats",
     "HostMemory",
     "LocalMemory",
     "MemoryCopyDescriptor",
-    # AXI Master Controller
     "AXIIdConfig",
     "AXIIdGenerator",
     "AXIMasterState",
     "PendingTransaction",
     "AXIMasterStats",
     "AXIMasterController",
-    # Host AXI Master
     "HostAXIMasterState",
     "AXIChannelPort",
     "AXIResponsePort",
     "HostAXIMasterStats",
     "HostAXIMaster",
-    # Golden Manager
+    # Backward compatibility re-exports from verification
     "GoldenKey",
     "GoldenSource",
     "GoldenManager",

@@ -4,7 +4,7 @@ Demo: How the validator detects violations.
 This shows what happens when you feed invalid metrics to the validator.
 """
 
-from validators.theory_validator import (
+from src.verification.theory_validator import (
     TheoryValidator,
     print_validation_results
 )

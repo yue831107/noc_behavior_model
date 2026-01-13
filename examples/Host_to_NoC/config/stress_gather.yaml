@@ -1,0 +1,112 @@
+# Gather Stress Test - High contention config
+# Multiple read operations from all nodes to create fan-in traffic
+# This should show buffer_depth effects due to response convergence
+
+transfers:
+  # Round 1: All nodes respond simultaneously
+  - src_addr: '0x0000'
+    src_size: 1024
+    dst_addr: '0x1000'
+    read_src_addr: '0x1000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 2
+  - src_addr: '0x1000'
+    src_size: 1024
+    dst_addr: '0x2000'
+    read_src_addr: '0x2000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 3
+  - src_addr: '0x2000'
+    src_size: 2048
+    dst_addr: '0x3000'
+    read_src_addr: '0x3000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 4
+  - src_addr: '0x3000'
+    src_size: 2048
+    dst_addr: '0x4000'
+    read_src_addr: '0x4000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 5: Larger transfer
+  - src_addr: '0x4000'
+    src_size: 4096
+    dst_addr: '0x5000'
+    read_src_addr: '0x5000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 6
+  - src_addr: '0x5000'
+    src_size: 4096
+    dst_addr: '0x6000'
+    read_src_addr: '0x6000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 7
+  - src_addr: '0x6000'
+    src_size: 2048
+    dst_addr: '0x7000'
+    read_src_addr: '0x7000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 8
+  - src_addr: '0x7000'
+    src_size: 2048
+    dst_addr: '0x8000'
+    read_src_addr: '0x8000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 9
+  - src_addr: '0x8000'
+    src_size: 1024
+    dst_addr: '0x9000'
+    read_src_addr: '0x9000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+  # Round 10
+  - src_addr: '0x9000'
+    src_size: 1024
+    dst_addr: '0xA000'
+    read_src_addr: '0xA000'
+    target_nodes: all
+    transfer_mode: gather
+    max_burst_len: 16
+    max_outstanding: 16
+
+# Sweep parameters
+sweep:
+  buffer_depth:
+    - 2
+    - 4
+    - 8
+    - 16

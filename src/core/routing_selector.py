@@ -17,10 +17,10 @@ from typing import Optional, Dict, List, Tuple, Deque, Callable
 from collections import deque
 from enum import Enum, auto
 
-from .flit import Flit, FlitType
+from .flit import Flit, AxiChannel, encode_node_id
 from .buffer import FlitBuffer, CreditFlowControl
 from .router import RouterPort, Direction, EdgeRouter, PortWire
-from .golden_manager import GoldenManager, VerificationReport
+from src.verification import GoldenManager, VerificationReport
 
 
 @dataclass
@@ -240,7 +240,8 @@ class RoutingSelector:
 
         # Packet-to-path mapping: track which row a packet is using
         # This ensures all flits of a packet go through the same edge router
-        self._packet_path: Dict[int, int] = {}  # packet_id -> row
+        # Key: (src_id, dst_id, rob_idx), Value: row
+        self._packet_path: Dict[Tuple[int, int, int], int] = {}
 
     def connect_edge_routers(self, edge_routers: List[EdgeRouter]) -> None:
         """
@@ -462,7 +463,7 @@ class RoutingSelector:
 
             # Update flit source to edge router coord (for response routing)
             # This is critical for XY routing to work correctly
-            flit.src = edge_port.coord
+            flit.hdr.src_id = encode_node_id(edge_port.coord)
 
             if edge_port.set_req_output(flit):
                 self.stats.req_flits_injected += 1
@@ -491,11 +492,12 @@ class RoutingSelector:
         Returns:
             Best row (0-3), or None if no path available.
         """
-        packet_id = flit.packet_id
+        # Use (src_id, dst_id, rob_idx) as packet key
+        packet_key = (flit.hdr.src_id, flit.hdr.dst_id, flit.hdr.rob_idx)
 
         # If this packet already has an assigned path, use it
-        if packet_id in self._packet_path:
-            assigned_row = self._packet_path[packet_id]
+        if packet_key in self._packet_path:
+            assigned_row = self._packet_path[packet_key]
             port = self.edge_ports[assigned_row]
             if port.can_send_request():
                 # NOTE: Don't delete path here - it will be deleted after successful send
@@ -530,14 +532,15 @@ class RoutingSelector:
         # If found a path and this is a multi-flit packet, remember the path
         if best_row is not None and not flit.is_single_flit():
             if flit.is_head():
-                self._packet_path[packet_id] = best_row
+                self._packet_path[packet_key] = best_row
 
         return best_row
 
     def _clear_packet_path(self, flit: Flit) -> None:
         """Clear packet path after successful TAIL send."""
-        if flit.is_tail() and flit.packet_id in self._packet_path:
-            del self._packet_path[flit.packet_id]
+        packet_key = (flit.hdr.src_id, flit.hdr.dst_id, flit.hdr.rob_idx)
+        if flit.is_tail() and packet_key in self._packet_path:
+            del self._packet_path[packet_key]
 
     def _calculate_hops(
         self,
@@ -743,6 +746,7 @@ class V1System:
         mesh_cols: int = 5,
         mesh_rows: int = 4,
         buffer_depth: int = 32,
+        max_outstanding: int = 16,
         selector_config: Optional[RoutingSelectorConfig] = None,
         host_memory: Optional["Memory"] = None,
     ):
@@ -753,6 +757,7 @@ class V1System:
             mesh_cols: Mesh columns.
             mesh_rows: Mesh rows.
             buffer_depth: Router buffer depth.
+            max_outstanding: Max outstanding transactions (affects NI and safety buffer sizing).
             selector_config: Selector configuration.
             host_memory: Optional Host Memory for DMA transfers.
         """
@@ -763,6 +768,7 @@ class V1System:
         self._mesh_cols = mesh_cols
         self._mesh_rows = mesh_rows
         self._buffer_depth = buffer_depth
+        self._max_outstanding = max_outstanding
 
         # Create mesh
         self.mesh = create_mesh(
@@ -772,11 +778,18 @@ class V1System:
             buffer_depth=buffer_depth
         )
 
-        # Create selector with matching buffer depth
+        # Create selector with safe buffer depths
+        # CRITICAL: ingress_buffer_depth must be >= max_outstanding to prevent deadlock
+        # When max_outstanding transactions are submitted, all their flits must fit
+        # in the ingress buffer, otherwise transactions block and cause deadlock.
+        # Ensure ingress buffer can hold all outstanding transaction flits
+        # Each transaction may produce multiple flits, so we need extra margin
+        safe_ingress_depth = max(buffer_depth, max_outstanding)
+
         if selector_config is None:
             selector_config = RoutingSelectorConfig(
-                ingress_buffer_depth=buffer_depth,
-                egress_buffer_depth=buffer_depth,
+                ingress_buffer_depth=safe_ingress_depth,
+                egress_buffer_depth=safe_ingress_depth,
             )
         self.selector = RoutingSelector(selector_config)
 
@@ -795,13 +808,16 @@ class V1System:
         )
         # Note: This is a SlaveNI (receives from AXI Master)
         # Named "master_ni" for backward compatibility with V1System API
-        # NI buffer depth should match router buffer depth to support same max packet size
+        # NI buffer depth must be large enough to hold flits for max_outstanding transactions
+        # Each transaction can produce multiple flits (e.g., 256B / 32B = 8 flits)
+        # Use safe_ingress_depth to ensure adequate buffering
         self.master_ni = SlaveNI(
             coord=(0, 0),  # Virtual coord for Host Slave NI
             address_map=self.address_map,
             config=NIConfig(
-                req_buffer_depth=buffer_depth,
-                resp_buffer_depth=buffer_depth,
+                req_buffer_depth=safe_ingress_depth,
+                resp_buffer_depth=safe_ingress_depth,
+                max_outstanding=max_outstanding,
             ),
             ni_id=0,
         )
@@ -888,7 +904,7 @@ class V1System:
 
         # 9. Host AXI Master: Receive responses and check completion
         if self.host_axi_master is not None:
-            from .host_axi_master import HostAXIMasterState
+            from src.testbench.host_axi_master import HostAXIMasterState
             self.host_axi_master._receive_axi_responses(self.current_time)
             # Check completion based on mode
             if self.host_axi_master._is_read_mode:
@@ -1067,8 +1083,8 @@ class V1System:
         Raises:
             ValueError: If host_memory is not set.
         """
-        from .host_axi_master import HostAXIMaster
-        from .axi_master import AXIIdConfig
+        from src.testbench.host_axi_master import HostAXIMaster
+        from src.testbench.axi_master import AXIIdConfig
 
         if self.host_memory is None:
             raise ValueError(
@@ -1153,8 +1169,8 @@ class V1System:
         Raises:
             ValueError: If host_memory is not set or mode is not read.
         """
-        from .host_axi_master import HostAXIMaster
-        from .axi_master import AXIIdConfig
+        from src.testbench.host_axi_master import HostAXIMaster
+        from src.testbench.axi_master import AXIIdConfig
 
         if self.host_memory is None:
             raise ValueError(
@@ -1374,7 +1390,7 @@ class NoCSystem:
             memory_size: Local memory size per node.
         """
         from .mesh import create_mesh
-        from .node_controller import NodeController
+        from src.testbench.node_controller import NodeController
         from .ni import NIConfig
 
         self.mesh_cols = mesh_cols
@@ -1424,7 +1440,7 @@ class NoCSystem:
         self._transfers_completed = 0
 
         # Golden data manager for verification
-        from .golden_manager import GoldenManager
+        from src.verification import GoldenManager
         self.golden_manager = GoldenManager()
 
         # Pending flits that couldn't be injected (back-pressure handling)
@@ -1819,7 +1835,7 @@ class NoCSystem:
         Returns:
             VerificationReport with detailed results.
         """
-        from .golden_manager import GoldenKey
+        from src.verification import GoldenKey
 
         if self._traffic_config is None:
             raise ValueError("Traffic not configured")

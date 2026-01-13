@@ -14,7 +14,7 @@ import pytest
 from typing import List, Tuple
 
 from src.core.router import Direction, XYRouter, PortWire, RouterConfig
-from src.core.flit import Flit, FlitType, FlitFactory
+from src.core.flit import Flit, AxiChannel, FlitFactory
 
 from tests.conftest import run_multi_router_cycle
 
@@ -172,12 +172,13 @@ class TestNorthPropagation:
         Test two hop NORTH propagation.
 
         R1(1,1) → R2(1,2) → R3(1,3)
+        Flit should reach R3's LOCAL (destination is R3).
         """
         routers, wires = router_chain_vertical
         r1, r2, r3 = routers
 
-        # Flit destined for position NORTH of R3
-        flit = single_flit_factory(src=(1, 0), dest=(1, 4))
+        # Flit destined for R3 (1,3) - R3 is the NORTH-most router in chain
+        flit = single_flit_factory(src=(1, 0), dest=(1, 3))
 
         # Inject at R1's SOUTH port
         r1.ports[Direction.SOUTH].receive(flit)
@@ -186,9 +187,9 @@ class TestNorthPropagation:
         for _ in range(10):
             run_multi_router_cycle(routers, wires)
 
-        # Flit should be at R3's NORTH output
-        r3_north = r3.ports[Direction.NORTH]
-        assert r3_north.out_valid or r3_north.occupancy > 0
+        # Flit should reach R3's LOCAL port (delivered to destination)
+        r3_local = r3.ports[Direction.LOCAL]
+        assert r3_local.out_valid or r3_local.occupancy > 0
 
 
 class TestSouthPropagation:
@@ -296,24 +297,28 @@ class TestMultiFlitPacket:
             r1.ports[Direction.WEST].receive(flit)
 
         # Run enough cycles to propagate all flits
-        received_order = []
+        received_flits = []
         for _ in range(20):
             run_multi_router_cycle(routers, wires)
 
             # Check R3's EAST output
             r3_east = r3.ports[Direction.EAST]
             if r3_east.out_valid and r3_east.out_flit is not None:
-                flit = r3_east.out_flit
-                received_order.append(flit.flit_type)
+                received_flits.append(r3_east.out_flit)
                 # Clear the output by simulating acceptance
                 r3_east.in_ready = True
                 r3_east.clear_output_if_accepted()
 
-        # Verify order: HEAD → BODY → TAIL
-        if len(received_order) >= 3:
-            assert received_order[0] == FlitType.HEAD
-            assert received_order[1] == FlitType.BODY
-            assert received_order[2] == FlitType.TAIL
+        # Verify all flits arrived and packet structure is correct
+        if len(received_flits) >= 3:
+            # First flit should NOT be last (packet continues)
+            assert received_flits[0].hdr.last is False, "First flit should not be last"
+            # Last flit should have last=True
+            assert received_flits[-1].hdr.last is True, "Last flit should have last=True"
+            # All flits should have same packet key (src_id, dst_id, rob_idx)
+            first_key = (received_flits[0].hdr.src_id, received_flits[0].hdr.dst_id, received_flits[0].hdr.rob_idx)
+            for flit in received_flits:
+                assert (flit.hdr.src_id, flit.hdr.dst_id, flit.hdr.rob_idx) == first_key
 
     def test_wormhole_locking(
         self, router_chain_horizontal, multi_flit_packet_factory
@@ -338,35 +343,37 @@ class TestMultiFlitPacket:
         for flit in packet_b:
             r1.ports[Direction.SOUTH].receive(flit)
 
-        # Run cycles and collect output order
-        received_packet_ids = []
+        # Run cycles and collect output order - use packet key (src_id, dst_id, rob_idx)
+        received_packet_keys = []
         for _ in range(30):
             run_multi_router_cycle(routers, wires)
 
             r3_east = r3.ports[Direction.EAST]
             if r3_east.out_valid and r3_east.out_flit is not None:
                 flit = r3_east.out_flit
-                received_packet_ids.append(flit.packet_id)
+                # Use (src_id, dst_id, rob_idx) as packet identifier
+                packet_key = (flit.hdr.src_id, flit.hdr.dst_id, flit.hdr.rob_idx)
+                received_packet_keys.append(packet_key)
                 r3_east.in_ready = True
                 r3_east.clear_output_if_accepted()
 
         # Packets should not be interleaved
-        # Find where packet IDs change
-        if len(received_packet_ids) >= 3:
+        # Find where packet keys change
+        if len(received_packet_keys) >= 3:
             # All flits from first packet should come before second packet
-            first_packet_id = received_packet_ids[0]
+            first_packet_key = received_packet_keys[0]
             switch_idx = None
-            for i, pid in enumerate(received_packet_ids):
-                if pid != first_packet_id:
+            for i, pkey in enumerate(received_packet_keys):
+                if pkey != first_packet_key:
                     switch_idx = i
                     break
 
             if switch_idx is not None:
-                # All remaining should be same packet_id (no interleaving back)
-                remaining = received_packet_ids[switch_idx:]
-                second_packet_id = remaining[0]
-                for pid in remaining:
-                    assert pid == second_packet_id, "Packets interleaved!"
+                # All remaining should be same packet_key (no interleaving back)
+                remaining = received_packet_keys[switch_idx:]
+                second_packet_key = remaining[0]
+                for pkey in remaining:
+                    assert pkey == second_packet_key, "Packets interleaved!"
 
 
 class TestBidirectionalTraffic:

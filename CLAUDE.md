@@ -12,6 +12,12 @@ NoC (Network-on-Chip) Behavior Model - A parameterizable cycle-accurate behavior
 # Run all tests
 py -3 -m pytest tests/ -v
 
+# Quick smoke test (~10 seconds)
+make test_smoke
+
+# Run all tests, stop on first failure
+make test_fast
+
 # Run unit tests only
 py -3 -m pytest tests/unit/ -v
 
@@ -38,9 +44,26 @@ make sim_noc_neighbor
 
 # Generate visualization charts
 make viz
+
+# Performance validation tests
+py -3 -m pytest tests/performance/ -v
+
+# Batch performance tests (500+ configs)
+py -3 tools/run_batch_perf_test.py --mode both --count 500
 ```
 
 Note: On Windows, use `py -3` instead of `python3` due to PATH conflicts with GTKWave.
+
+## Development Setup
+
+```bash
+# Install pre-commit hooks (optional but recommended)
+pip install pre-commit
+pre-commit install
+
+# Run linters manually
+pre-commit run --all-files
+```
 
 ## Architecture Overview
 
@@ -93,12 +116,15 @@ Flit → Packet → AXI Transaction
 FlitFactory  PacketFactory, PacketAssembler/Disassembler
 ```
 
-- FlitType: HEAD, BODY, TAIL, HEAD_TAIL (single-flit packet)
+- Flit format: FlooNoC style with 20-bit header + AXI payload
+  - Header contains: `rob_req`, `rob_idx`, `dst_id`, `src_id`, `last`, `axi_ch`
+  - `hdr.last` bit marks packet end (replaces old FlitType enum)
+  - AXI channels: AW (53b), W (288b), AR (53b), B (10b), R (266b)
 - PacketType: WRITE_REQ, WRITE_RESP, READ_REQ, READ_RESP
 
 ### Golden Data Verification
 
-GoldenManager (`src/core/golden_manager.py`) handles expected data tracking:
+GoldenManager (`src/verification/golden_manager.py`) handles expected data tracking:
 - Captures write data for later verification
 - For NoC-to-NoC: longest-distance-wins conflict resolution
 - Verification compares actual memory contents vs. expected
@@ -107,26 +133,51 @@ GoldenManager (`src/core/golden_manager.py`) handles expected data tracking:
 
 ```
 src/
-├── core/          # Core simulation components
+├── core/          # Core NoC hardware model
 │   ├── router.py  # XYRouter, WormholeArbiter, PortWire
 │   ├── mesh.py    # 2D Mesh topology
 │   ├── ni.py      # SlaveNI, MasterNI
 │   ├── routing_selector.py  # V1System, NoCSystem
-│   └── golden_manager.py    # Verification
+│   ├── flit.py    # FlitHeader, Flit, AXI payloads
+│   ├── packet.py  # PacketAssembler, PacketDisassembler
+│   └── buffer.py  # FlitBuffer
+├── testbench/     # DUT peripherals (not part of NoC)
+│   ├── memory.py  # HostMemory, LocalMemory
+│   ├── axi_master.py         # AXIMasterController
+│   ├── host_axi_master.py    # HostAXIMaster (V1System)
+│   ├── local_axi_master.py   # LocalAXIMaster (NoCSystem)
+│   └── node_controller.py    # NodeController
+├── verification/  # Validators and golden reference
+│   ├── golden_manager.py     # GoldenManager
+│   ├── theory_validator.py   # TheoryValidator
+│   ├── consistency_validator.py  # ConsistencyValidator
+│   └── metrics_provider.py   # MetricsProvider protocol
 ├── axi/           # AXI protocol definitions
 ├── address/       # Address map and translation
 ├── traffic/       # Traffic pattern generators
 ├── visualization/ # Charts and metrics
 └── config.py      # TransferConfig, NoCTrafficConfig
 
+tests/
+├── fixtures/      # Test resources
+│   └── configs/   # Test-specific config files
+├── unit/          # Component-level tests
+├── integration/   # Multi-component tests
+│   └── deadlock_helpers.py  # Deadlock detection utilities
+├── performance/   # Performance validation tests
+│   ├── sweep/     # Parameter sweep infrastructure
+│   └── regression/  # Regression test configs
+└── conftest.py    # Shared fixtures, run_multi_router_cycle()
+
+tools/
+├── pattern_gen.py          # Payload generator
+├── gen_transfer_config.py  # Config generator
+├── run_multi_para.py       # Multi-parameter sweep runner
+└── run_batch_perf_test.py  # Batch performance test runner (500+ tests)
+
 examples/
 ├── Host_to_NoC/   # run.py, config/*.yaml
 └── NoC_to_NoC/    # run.py, config/*.yaml
-
-tests/
-├── unit/          # Component-level tests
-├── integration/   # Multi-component tests
-└── conftest.py    # Shared fixtures, run_multi_router_cycle()
 ```
 
 ## Testing Patterns

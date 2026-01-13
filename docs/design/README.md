@@ -1,27 +1,46 @@
 # NoC Behavior Model - 設計文件
 
-本目錄包含 NoC Behavior Model 的設計規格，從原始 `spec.md` 切分而來，便於每次專注於單一功能模組。
+本目錄包含 NoC Behavior Model 的設計規格文件。
 
 ---
 
 ## 文件索引
 
-| 文件 | 說明 | 主要內容 |
-|------|------|----------|
-| [00_overview.md](00_overview.md) | 系統概述 | V1 架構圖、拓撲參數、特性與限制 |
-| [01_router.md](01_router.md) | Router 規格 | Ports、參數、Routing Algorithms |
-| [02_network_interface.md](02_network_interface.md) | Network Interface 規格 | Address Translation、Slave/Master NI、資料路徑 |
-| [03_routing_selector.md](03_routing_selector.md) | Routing Selector 規格 | 架構、Edge Router 連接、路徑選擇演算法 |
-| [04_flit.md](04_flit.md) | Flit 格式 | 類型、結構、大小限制 |
-| [05_operation_modes.md](05_operation_modes.md) | 操作模式 | DMA/PIO 模式、交易流程 |
-| [06_simulation.md](06_simulation.md) | 模擬參數 | SimConfig、流量模式 |
-| [07_metrics.md](07_metrics.md) | 指標與視覺化 | 效能指標、視覺化需求 |
-| [08_design_decisions.md](08_design_decisions.md) | 設計決策 | 模擬模型、Req/Resp 分離、Flow Control、AXI4 |
-| [09_implementation.md](09_implementation.md) | 實作注意事項 | 語言選擇、模擬架構、檔案結構 |
-| [10_v2_smart_crossbar.md](10_v2_smart_crossbar.md) | V2 Smart Crossbar 架構 | Multi-NI、Crossbar 路由、效能比較 |
-| [11_internal_interface.md](11_internal_interface.md) | 內部介面架構 | Credit-Based Flow Control、Port Interface |
-| [12_memory_copy.md](12_memory_copy.md) | Memory Copy 操作 | 架構、V1 限制、交錯傳輸 |
-| [13_golden_verification.md](13_golden_verification.md) | Golden 驗證機制 | Host Write/Read Golden 產生與比對 |
+### 核心元件
+
+| 序號 | 文件 | 說明 |
+|------|------|------|
+| 01 | [系統概述](01_overview.md) | V1 架構圖、拓撲參數 |
+| 02 | [Router 規格](02_router.md) | Ports、XY Routing、Wormhole Arbiter |
+| 03 | [Network Interface 規格](03_network_interface.md) | SlaveNI、MasterNI、資料路徑 |
+| 04 | [Routing Selector 規格](04_routing_selector.md) | 路徑選擇演算法、Edge Router 連接 |
+| 05 | [Flit 格式](05_flit.md) | 類型、結構、大小限制 |
+| 06 | [內部介面架構](06_internal_interface.md) | Credit-Based Flow Control、Port Interface |
+
+### 系統行為
+
+| 序號 | 文件 | 說明 |
+|------|------|------|
+| 07 | [操作模式](07_operation_modes.md) | DMA/PIO 模式、交易流程 |
+| 08 | [Memory 操作](08_memory_operations.md) | Host-to-NoC 傳輸、交錯傳輸 |
+| 09 | [NoC-to-NoC 通訊](09_noc_to_noc.md) | 節點間通訊、Traffic Patterns |
+| 10 | [Golden 驗證機制](10_golden_verification.md) | 資料驗證、比對流程 |
+
+### 模擬與分析
+
+| 序號 | 文件 | 說明 |
+|------|------|------|
+| 11 | [模擬參數](11_simulation.md) | V1System 配置、TransferConfig |
+| 12 | [效能指標](12_metrics.md) | Stats 類別、統計收集 |
+| 13 | [設計決策](13_design_decisions.md) | 架構選擇、Flow Control 設計 |
+| 14 | [效能驗證框架](14_performance_validation.md) | 驗證策略、Baseline 格式 |
+
+### 附錄
+
+| 序號 | 文件 | 說明 |
+|------|------|------|
+| A1 | [V2 Smart Crossbar](A1_v2_smart_crossbar.md) | 未來規劃架構 (未實作) |
+| - | [硬體參數指南](hardware_parameters_guide.md) | 參數調校參考 |
 
 ---
 
@@ -30,50 +49,26 @@
 ### 依功能分類
 
 **核心元件**
-- [Router](01_router.md)
-- [Network Interface](02_network_interface.md)
-- [Routing Selector](03_routing_selector.md)
-- [Flit](04_flit.md)
+- [Router](02_router.md) - XY Routing、Wormhole Switching
+- [Network Interface](03_network_interface.md) - AXI ↔ Flit 轉換
+- [Routing Selector](04_routing_selector.md) - V1 入口/出口點
+- [Flit 格式](05_flit.md) - 封包結構
 
-**系統行為**
-- [操作模式](05_operation_modes.md)
-- [Memory Copy](12_memory_copy.md)
+**操作模式**
+- [Host-to-NoC](08_memory_operations.md) - Host 對節點傳輸
+- [NoC-to-NoC](09_noc_to_noc.md) - 節點間通訊
 
-**模擬與分析**
-- [模擬參數](06_simulation.md)
-- [指標與視覺化](07_metrics.md)
-- [Golden 驗證機制](13_golden_verification.md)
-
-**設計與實作**
-- [設計決策](08_design_decisions.md)
-- [實作注意事項](09_implementation.md)
-- [內部介面架構](11_internal_interface.md)
-
-**架構版本**
-- [V1 系統概述](00_overview.md)
-- [V2 Smart Crossbar](10_v2_smart_crossbar.md)
+**驗證與分析**
+- [Golden 驗證](10_golden_verification.md) - 資料正確性驗證
+- [效能指標](12_metrics.md) - 統計收集
+- [效能驗證框架](14_performance_validation.md) - 理論驗證、一致性驗證
 
 ---
 
-## 版本歷史
-
-| 版本 | 說明 | 狀態 |
-|------|------|------|
-| **V1** | Single Entry Routing Selector | 實作完成 |
-| **V2** | Smart Crossbar (Multi-NI) | 定義完成 |
-
----
-
-## 參考圖片
+## 圖片資源
 
 | 檔案 | 內容 |
 |------|------|
 | `docs/images/NI.jpg` | NI 內部架構 |
-| `docs/images/operation.jpg` | DMA/PIO 操作模式 |
-| `docs/images/network_interface_slide.jpg` | NI 詳細架構 (Req/Resp 分離) |
 | `docs/images/selector.jpg` | V1 Routing Selector 架構 |
-| `docs/images/selector_slide.jpg` | V1 Routing Selector 詳細連接 |
-| `docs/images/smart_crossbar.jpg` | V2 Smart Crossbar 架構 |
-| `docs/images/smart_crossbar_slide.jpg` | V2 Smart Crossbar 詳細架構 |
-| `docs/images/sim_engine.jpg` | 模擬引擎架構 |
 | `docs/images/test_bench.jpg` | 測試架構圖 |

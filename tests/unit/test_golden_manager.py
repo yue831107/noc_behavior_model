@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 import tempfile
 
-from src.core.golden_manager import (
+from src.verification import (
     GoldenManager,
     GoldenEntry,
     GoldenSource,

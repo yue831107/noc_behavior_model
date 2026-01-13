@@ -178,41 +178,49 @@ class FlitBuffer(Buffer[Flit]):
     Specialized buffer for Flits.
 
     Adds flit-specific functionality like packet tracking.
+    Uses FlooNoC format with (src_id, dst_id, rob_idx) as packet key.
     """
 
     def __init__(self, depth: int, name: str = ""):
         super().__init__(depth, name)
-        self._packet_flits: dict[int, int] = {}  # packet_id -> flit count
+        # Packet key: (src_id, dst_id, rob_idx) -> flit count
+        self._packet_flits: dict[tuple[int, int, int], int] = {}
+
+    def _get_packet_key(self, flit: Flit) -> tuple[int, int, int]:
+        """Get packet key from flit header."""
+        hdr = flit.hdr
+        return (hdr.src_id, hdr.dst_id, hdr.rob_idx)
 
     def push(self, flit: Flit) -> bool:
         """Push a flit to the buffer."""
         if not super().push(flit):
             return False
-        # Track packets
-        self._packet_flits[flit.packet_id] = (
-            self._packet_flits.get(flit.packet_id, 0) + 1
-        )
+        # Track packets using header fields
+        key = self._get_packet_key(flit)
+        self._packet_flits[key] = self._packet_flits.get(key, 0) + 1
         return True
 
     def pop(self) -> Optional[Flit]:
         """Pop a flit from the buffer."""
         flit = super().pop()
         if flit is not None:
-            self._packet_flits[flit.packet_id] -= 1
-            if self._packet_flits[flit.packet_id] == 0:
-                del self._packet_flits[flit.packet_id]
+            key = self._get_packet_key(flit)
+            if key in self._packet_flits:
+                self._packet_flits[key] -= 1
+                if self._packet_flits[key] == 0:
+                    del self._packet_flits[key]
         return flit
 
     def has_complete_packet(self) -> bool:
         """
         Check if buffer contains at least one complete packet.
 
-        A complete packet has HEAD...TAIL sequence.
+        Uses FlooNoC's 'last' bit to detect packet completion.
         """
         if self.is_empty():
             return False
 
-        # Check if first flit is HEAD and we have its TAIL
+        # Check if first flit is head and we have its tail
         first = self.peek()
         if first is None:
             return False
@@ -224,16 +232,17 @@ class FlitBuffer(Buffer[Flit]):
             # Corrupted state - first flit should be HEAD
             return False
 
-        # Look for TAIL with same packet_id
+        # Look for last flit with same packet key
+        first_key = self._get_packet_key(first)
         for flit in self._queue:
-            if flit.packet_id == first.packet_id and flit.is_tail():
+            if self._get_packet_key(flit) == first_key and flit.hdr.last:
                 return True
 
         return False
 
-    def get_packet_flit_count(self, packet_id: int) -> int:
+    def get_packet_flit_count(self, packet_key: tuple[int, int, int]) -> int:
         """Get number of flits for a specific packet in buffer."""
-        return self._packet_flits.get(packet_id, 0)
+        return self._packet_flits.get(packet_key, 0)
 
 
 @dataclass

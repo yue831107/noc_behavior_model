@@ -23,7 +23,11 @@ from typing import Optional, Dict, List, Tuple, Deque, Callable
 from collections import deque
 from enum import Enum, auto
 
-from .flit import Flit, FlitType, FlitFactory
+from .flit import (
+    Flit, FlitFactory, FlitHeader, AxiChannel,
+    AxiAwPayload, AxiWPayload, AxiArPayload, AxiBPayload, AxiRPayload,
+    encode_node_id, decode_node_id,
+)
 from .buffer import FlitBuffer, Buffer
 from .packet import (
     Packet, PacketType, PacketFactory,
@@ -117,7 +121,7 @@ class TransactionState(Enum):
 class PendingTransaction:
     """Tracking data for an in-flight transaction."""
     axi_id: int
-    packet_id: int
+    rob_idx: int  # RoB index for response matching (FlooNoC style)
     is_write: bool
     state: TransactionState
     timestamp_start: int
@@ -183,7 +187,7 @@ class _SlaveNI_ReqPath:
 
         # B RoB / R RoB: Track outstanding transactions for response matching
         self._active_transactions: Dict[int, PendingTransaction] = {}
-        self._packet_to_axi: Dict[int, int] = {}  # packet_id -> axi_id
+        self._rob_to_axi: Dict[int, int] = {}  # rob_idx -> axi_id
 
         # ROB index counter (for response matching)
         self._next_rob_idx: int = 0
@@ -241,7 +245,7 @@ class _SlaveNI_ReqPath:
         # Create pending transaction (AW Spill Reg)
         txn = PendingTransaction(
             axi_id=aw.awid,
-            packet_id=0,  # Will be set when packet is created
+            rob_idx=0,  # Will be set when packet is created
             is_write=True,
             state=TransactionState.PENDING_W,
             timestamp_start=timestamp,
@@ -323,21 +327,19 @@ class _SlaveNI_ReqPath:
                 local_addr=txn.local_addr,
                 data=data,
                 axi_id=txn.axi_id,
-                src_ni_id=self.ni_id,
-                timestamp=timestamp,
             )
 
-            txn.packet_id = packet.packet_id
+            txn.rob_idx = packet.rob_idx
 
             # Assemble into flits
-            flits = self.packet_assembler.assemble(packet, timestamp)
+            flits = self.packet_assembler.assemble(packet)
 
             # Cache flits for streaming send
             txn._cached_flits = list(flits)  # Make a mutable copy
 
             # Track transaction as active when first flit is ready
-            self._active_transactions[txn.packet_id] = txn
-            self._packet_to_axi[txn.packet_id] = txn.axi_id
+            self._active_transactions[txn.rob_idx] = txn
+            self._rob_to_axi[txn.rob_idx] = txn.axi_id
             self.stats.write_requests += 1
 
         # Wormhole: send only 1 flit per cycle for cycle-accurate timing
@@ -398,14 +400,12 @@ class _SlaveNI_ReqPath:
             local_addr=local_addr,
             read_size=ar.transfer_size,
             axi_id=ar.arid,
-            src_ni_id=self.ni_id,
-            timestamp=timestamp,
         )
 
         # Create transaction tracking (R RoB entry)
         txn = PendingTransaction(
             axi_id=ar.arid,
-            packet_id=packet.packet_id,
+            rob_idx=packet.rob_idx,
             is_write=False,
             state=TransactionState.PENDING_SEND,
             timestamp_start=timestamp,
@@ -417,14 +417,14 @@ class _SlaveNI_ReqPath:
         )
 
         # Assemble into flits (Pack AR)
-        flits = self.packet_assembler.assemble(packet, timestamp)
+        flits = self.packet_assembler.assemble(packet)
 
         # Queue flits
         for flit in flits:
             self.output_buffer.push(flit)
 
-        self._active_transactions[packet.packet_id] = txn
-        self._packet_to_axi[packet.packet_id] = ar.arid
+        self._active_transactions[packet.rob_idx] = txn
+        self._rob_to_axi[packet.rob_idx] = ar.arid
 
         self.stats.read_requests += 1
         return True
@@ -436,18 +436,18 @@ class _SlaveNI_ReqPath:
             self.stats.req_flits_sent += 1
 
             # Update transaction state
-            if flit.packet_id in self._active_transactions:
-                txn = self._active_transactions[flit.packet_id]
+            if flit.hdr.rob_idx in self._active_transactions:
+                txn = self._active_transactions[flit.hdr.rob_idx]
                 txn.state = TransactionState.IN_FLIGHT
 
         return flit
 
-    def mark_transaction_complete(self, packet_id: int, timestamp: int) -> Optional[int]:
+    def mark_transaction_complete(self, rob_idx: int, timestamp: int) -> Optional[int]:
         """Mark a transaction as complete (response received)."""
-        if packet_id not in self._active_transactions:
+        if rob_idx not in self._active_transactions:
             return None
 
-        txn = self._active_transactions[packet_id]
+        txn = self._active_transactions[rob_idx]
         txn.state = TransactionState.COMPLETED
         txn.timestamp_end = timestamp
 
@@ -459,23 +459,23 @@ class _SlaveNI_ReqPath:
             self.stats.total_read_latency += latency
 
         axi_id = txn.axi_id
-        del self._active_transactions[packet_id]
-        del self._packet_to_axi[packet_id]
+        del self._active_transactions[rob_idx]
+        del self._rob_to_axi[rob_idx]
 
         return axi_id
 
     def mark_transaction_complete_by_axi_id(self, axi_id: int, timestamp: int) -> bool:
         """Mark a transaction as complete by AXI ID."""
-        packet_id = None
-        for pid, aid in self._packet_to_axi.items():
+        rob_idx = None
+        for rid, aid in self._rob_to_axi.items():
             if aid == axi_id:
-                packet_id = pid
+                rob_idx = rid
                 break
 
-        if packet_id is None:
+        if rob_idx is None:
             return False
 
-        self.mark_transaction_complete(packet_id, timestamp)
+        self.mark_transaction_complete(rob_idx, timestamp)
         return True
 
     def has_pending_output(self) -> bool:
@@ -765,9 +765,9 @@ class SlaveNI:
         self.req_path.process_cycle(current_time)  # Try to send ready packets
         self.rsp_path.process_cycle(current_time)
 
-    def mark_transaction_complete(self, packet_id: int, timestamp: int) -> Optional[int]:
+    def mark_transaction_complete(self, rob_idx: int, timestamp: int) -> Optional[int]:
         """Mark transaction as complete."""
-        return self.req_path.mark_transaction_complete(packet_id, timestamp)
+        return self.req_path.mark_transaction_complete(rob_idx, timestamp)
 
     @property
     def stats(self) -> Tuple[NIStats, NIStats]:
@@ -840,7 +840,7 @@ class MasterNI_RequestInfo:
     When Master NI receives a request from NoC, it stores this info
     to correctly route the response back to the source.
     """
-    packet_id: int                      # Original packet ID
+    rob_idx: int                        # RoB index for response matching
     axi_id: int                         # AXI transaction ID
     src_coord: Tuple[int, int]          # Source NI coordinate (for response routing)
     is_write: bool                      # True for write, False for read
@@ -875,7 +875,7 @@ class AXISlave:
             memory: Memory instance to wrap.
             config: NI configuration for AXI parameters.
         """
-        from .memory import Memory, LocalMemory
+        from src.testbench.memory import Memory, LocalMemory
         self.memory = memory
         self.config = config or NIConfig()
 
@@ -1125,7 +1125,7 @@ class LocalMemoryUnit:
             memory_size: Memory size in bytes (default 4GB).
             config: NI configuration for AXI parameters.
         """
-        from .memory import LocalMemory
+        from src.testbench.memory import LocalMemory
         
         self.node_id = node_id
         self.config = config or NIConfig()
@@ -1247,7 +1247,7 @@ class MasterNI:
             self._owns_memory = False
         else:
             # Backward compatibility: create internal LocalMemoryUnit
-            from .memory import LocalMemory
+            from src.testbench.memory import LocalMemory
             self._local_memory_unit = LocalMemoryUnit(
                 node_id=node_id,
                 memory_size=memory_size,
@@ -1418,11 +1418,11 @@ class MasterNI:
         """
         # Notify packet arrival for metrics collection
         if self._packet_arrival_callback:
-            self._packet_arrival_callback(packet.packet_id, packet.timestamp, current_time)
+            self._packet_arrival_callback(packet.rob_idx, 0, current_time)
 
         # Store request info in Per-ID FIFO for response routing
         req_info = MasterNI_RequestInfo(
-            packet_id=packet.packet_id,
+            rob_idx=packet.rob_idx,
             axi_id=packet.axi_id,
             src_coord=packet.src,
             is_write=(packet.packet_type == PacketType.WRITE_REQ),
@@ -1515,11 +1515,10 @@ class MasterNI:
                     src=self.coord,
                     dest=req_info.src_coord,  # Route back to source
                     axi_id=axi_id,
-                    timestamp=current_time,
                 )
 
                 # Pack into flits
-                flits = self.packet_assembler.assemble(resp_packet, current_time)
+                flits = self.packet_assembler.assemble(resp_packet)
                 for flit in flits:
                     if not self.resp_output.push(flit):
                         # Should not happen if we checked space, but log it
@@ -1567,11 +1566,10 @@ class MasterNI:
                     dest=req_info.src_coord,
                     axi_id=axi_id,
                     data=accumulated_data,
-                    timestamp=current_time,
                 )
-                
+
                 # Assemble into flits and queue for sending
-                flits = self.packet_assembler.assemble(resp_packet, current_time)
+                flits = self.packet_assembler.assemble(resp_packet)
                 for flit in flits:
                     self._pending_flits.append(flit)
                 
@@ -1619,10 +1617,9 @@ class MasterNI:
                     dest=req_info.src_coord,
                     axi_id=axi_id,
                     data=accumulated_data,
-                    timestamp=current_time,
                 )
-                
-                flits = self.packet_assembler.assemble(resp_packet, current_time)
+
+                flits = self.packet_assembler.assemble(resp_packet)
                 for flit in flits:
                     self._pending_flits.append(flit)
                 
@@ -1656,12 +1653,39 @@ class MasterNI:
 
 
 # =============================================================================
-# Backward Compatibility Aliases
+# Backward Compatibility Aliases (Deprecated)
 # =============================================================================
 
-# For backward compatibility with existing code
-NetworkInterface = SlaveNI
+import warnings as _warnings
+
+
+def _create_deprecated_alias(name: str, target, new_name: str):
+    """
+    Create a deprecated class alias that warns on first use.
+
+    Uses a wrapper class to emit deprecation warning when instantiated.
+    """
+    class DeprecatedAlias(target):
+        _warned = False
+
+        def __new__(cls, *args, **kwargs):
+            if not DeprecatedAlias._warned:
+                _warnings.warn(
+                    f"{name} is deprecated, use {new_name} instead",
+                    DeprecationWarning,
+                    stacklevel=2
+                )
+                DeprecatedAlias._warned = True
+            return super().__new__(cls)
+
+    DeprecatedAlias.__name__ = name
+    DeprecatedAlias.__qualname__ = name
+    return DeprecatedAlias
+
+
+# For backward compatibility with existing code (deprecated)
+NetworkInterface = _create_deprecated_alias("NetworkInterface", SlaveNI, "SlaveNI")
 
 # Legacy internal class names (deprecated, use SlaveNI/MasterNI instead)
-ReqNI = _SlaveNI_ReqPath
-RespNI = _SlaveNI_RspPath
+ReqNI = _create_deprecated_alias("ReqNI", _SlaveNI_ReqPath, "_SlaveNI_ReqPath")
+RespNI = _create_deprecated_alias("RespNI", _SlaveNI_RspPath, "_SlaveNI_RspPath")

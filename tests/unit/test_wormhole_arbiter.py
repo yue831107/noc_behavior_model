@@ -10,7 +10,7 @@ Tests verify:
 
 import pytest
 from src.core.router import Direction, WormholeArbiter
-from src.core.flit import FlitFactory, FlitType, Flit
+from src.core.flit import FlitFactory, AxiChannel, Flit
 
 
 class TestWormholeArbiterInitialState:

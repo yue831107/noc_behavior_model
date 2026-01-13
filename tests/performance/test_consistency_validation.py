@@ -6,7 +6,7 @@ Uses Monitor-based approach - no core modification required.
 """
 
 import pytest
-from tests.performance.validators.consistency_validator import (
+from src.verification.consistency_validator import (
     ConsistencyValidator,
     print_consistency_results
 )

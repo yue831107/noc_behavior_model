@@ -16,13 +16,13 @@ from src.core.routing_selector import (
     RoutingSelector, RoutingSelectorConfig, EdgeRouterPort, V1System
 )
 from src.core.router import Direction, EdgeRouter, RouterConfig, PortWire
-from src.core.flit import Flit, FlitType, FlitFactory
+from src.core.flit import Flit, AxiChannel, FlitFactory, FlitHeader, AxiArPayload, encode_node_id
 
 
 @pytest.fixture(autouse=True)
 def reset_flit_counters():
-    """Reset packet/flit ID counters before each test."""
-    FlitFactory.reset_packet_id()
+    """Reset RoB index counter before each test."""
+    FlitFactory.reset()
     yield
 
 
@@ -68,24 +68,22 @@ def connected_selector(selector_config, edge_routers) -> RoutingSelector:
 @pytest.fixture
 def single_flit_to_row1() -> Flit:
     """Create a request flit destined for (2, 1)."""
-    return FlitFactory.create_single(
+    return FlitFactory.create_ar(
         src=(0, 0),  # Will be updated by selector
         dest=(2, 1),
-        is_request=True,
-        payload=b"test_req",
-        timestamp=0,
+        addr=0x1000,
+        axi_id=0,
     )
 
 
 @pytest.fixture
 def response_flit_from_row1() -> Flit:
     """Create a response flit from (2, 1)."""
-    return FlitFactory.create_single(
+    return FlitFactory.create_b(
         src=(2, 1),
         dest=(0, 1),
-        is_request=False,
-        payload=b"test_resp",
-        timestamp=0,
+        axi_id=0,
+        resp=0,
     )
 
 
@@ -142,9 +140,8 @@ class TestSelectorToEdgeRequestPath:
     def test_path_selection_uses_hop_count(self, connected_selector, edge_routers):
         """Path selection should prefer shorter hop count."""
         # Flit to (2, 3) - shortest from row 3
-        flit = FlitFactory.create_single(
-            src=(0, 0), dest=(2, 3), is_request=True,
-            payload=b"test", timestamp=0
+        flit = FlitFactory.create_ar(
+            src=(0, 0), dest=(2, 3), addr=0x1000, axi_id=0
         )
 
         connected_selector.accept_request(flit)
@@ -156,26 +153,26 @@ class TestSelectorToEdgeRequestPath:
 
     def test_multi_flit_uses_same_path(self, connected_selector, edge_routers):
         """Multi-flit packet should use same EdgeRouter for all flits."""
-        # Create HEAD flit
+        # Create HEAD flit (last=False)
         head = Flit(
-            flit_type=FlitType.HEAD,
-            src=(0, 0),
-            dest=(2, 1),
-            packet_id=1,
-            seq_num=0,
-            is_request=True,
-            payload=b"HEAD",
+            hdr=FlitHeader(
+                rob_req=False, rob_idx=1,
+                dst_id=encode_node_id((2, 1)),
+                src_id=encode_node_id((0, 0)),
+                last=False, axi_ch=AxiChannel.AR
+            ),
+            payload=AxiArPayload(addr=0x1000, axi_id=0, length=1, size=2, burst=1)
         )
 
-        # Create TAIL flit (same packet)
+        # Create TAIL flit (same packet - same src, dst, rob_idx, but last=True)
         tail = Flit(
-            flit_type=FlitType.TAIL,
-            src=(0, 0),
-            dest=(2, 1),
-            packet_id=1,
-            seq_num=1,
-            is_request=True,
-            payload=b"TAIL",
+            hdr=FlitHeader(
+                rob_req=False, rob_idx=1,
+                dst_id=encode_node_id((2, 1)),
+                src_id=encode_node_id((0, 0)),
+                last=True, axi_ch=AxiChannel.AR
+            ),
+            payload=AxiArPayload(addr=0x1000, axi_id=0, length=1, size=2, burst=1)
         )
 
         # Send HEAD
@@ -252,9 +249,8 @@ class TestEdgeToSelectorResponsePath:
         """Responses from multiple EdgeRouters should all reach Selector."""
         # Set responses on all EdgeRouters
         for row, router in enumerate(edge_routers):
-            flit = FlitFactory.create_single(
-                src=(2, row), dest=(0, row), is_request=False,
-                payload=f"resp_{row}".encode(), timestamp=0
+            flit = FlitFactory.create_b(
+                src=(2, row), dest=(0, row), axi_id=row, resp=0
             )
             resp_local = router.resp_router.ports[Direction.LOCAL]
             resp_local.out_valid = True
@@ -284,10 +280,9 @@ class TestSelectorBackpressure:
         req_local = edge_router.req_router.ports[Direction.LOCAL]
 
         # Fill EdgeRouter's LOCAL buffer
-        for _ in range(req_local._buffer_depth):
-            flit = FlitFactory.create_single(
-                src=(0, 1), dest=(2, 1), is_request=True,
-                payload=b"fill", timestamp=0
+        for i in range(req_local._buffer_depth):
+            flit = FlitFactory.create_ar(
+                src=(0, 1), dest=(2, 1), addr=0x1000 + i, axi_id=i
             )
             req_local._buffer.push(flit)
 
@@ -296,9 +291,8 @@ class TestSelectorBackpressure:
         edge_port._req_port._output_credit._credits = 0
 
         # Try to send flit that would go to row 1
-        flit = FlitFactory.create_single(
-            src=(0, 0), dest=(2, 1), is_request=True,
-            payload=b"blocked", timestamp=0
+        flit = FlitFactory.create_ar(
+            src=(0, 0), dest=(2, 1), addr=0x2000, axi_id=0
         )
         connected_selector.accept_request(flit)
 
@@ -321,9 +315,8 @@ class TestSelectorBackpressure:
         initial_credits = edge_port.available_credits
 
         # Send flit (will consume one credit on clear)
-        flit = FlitFactory.create_single(
-            src=(0, 0), dest=(2, 1), is_request=True,
-            payload=b"test", timestamp=0
+        flit = FlitFactory.create_ar(
+            src=(0, 0), dest=(2, 1), addr=0x1000, axi_id=0
         )
         connected_selector.accept_request(flit)
         connected_selector.process_cycle(0)
@@ -371,9 +364,8 @@ class TestSelectorPhasedProcessing:
         edge_router = edge_routers[0]
         resp_local = edge_router.resp_router.ports[Direction.LOCAL]
         resp_local.out_valid = True
-        resp_local.out_flit = FlitFactory.create_single(
-            src=(2, 0), dest=(0, 0), is_request=False,
-            payload=b"resp", timestamp=0
+        resp_local.out_flit = FlitFactory.create_b(
+            src=(2, 0), dest=(0, 0), axi_id=0, resp=0
         )
 
         connected_selector.propagate_all_wires()
@@ -464,9 +456,8 @@ class TestEdgeRouterPortIntegration:
         """Selector stats should track path usage."""
         # Send flits to different destinations
         for row in range(4):
-            flit = FlitFactory.create_single(
-                src=(0, 0), dest=(2, row), is_request=True,
-                payload=f"row_{row}".encode(), timestamp=0
+            flit = FlitFactory.create_ar(
+                src=(0, 0), dest=(2, row), addr=0x1000 + row * 0x100, axi_id=row
             )
             connected_selector.accept_request(flit)
 

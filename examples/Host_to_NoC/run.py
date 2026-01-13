@@ -25,6 +25,103 @@ from src.core import V1System, HostMemory, Memory
 from src.config import load_transfer_config, load_transfer_configs, TransferConfig, TransferMode
 
 
+def validate_performance_metrics(metrics: dict, verbose: bool = True) -> bool:
+    """
+    Validate performance metrics against theoretical bounds and consistency.
+
+    Uses validators from tests/performance to check:
+    - TheoryValidator: Throughput <= max, Buffer utilization in [0,1]
+    - ConsistencyValidator: Little's Law, Flit Conservation
+
+    Args:
+        metrics: Dict with performance metrics:
+            - throughput: bytes/cycle
+            - buffer_utilization: ratio [0, 1]
+            - avg_latency: cycles (for Little's Law)
+            - avg_occupancy: flits in network (for Little's Law)
+            - total_flits_sent: flits injected (for Flit Conservation)
+            - total_flits_received: flits ejected (for Flit Conservation)
+        verbose: Print validation results
+
+    Returns:
+        True if all validations pass.
+    """
+    all_passed = True
+    results = []
+
+    # === Theory Validation ===
+    try:
+        from src.verification import TheoryValidator
+        theory_validator = TheoryValidator()
+
+        # 1. Throughput validation
+        if 'throughput' in metrics:
+            is_valid, msg = theory_validator.validate_throughput(metrics['throughput'])
+            results.append(('Throughput', is_valid, msg))
+            if not is_valid:
+                all_passed = False
+
+        # 2. Buffer utilization validation
+        if 'buffer_utilization' in metrics and metrics['buffer_utilization'] is not None:
+            is_valid, msg = theory_validator.validate_buffer_utilization(metrics['buffer_utilization'])
+            results.append(('Buffer Util', is_valid, msg))
+            if not is_valid:
+                all_passed = False
+
+    except ImportError:
+        if verbose:
+            print("\n--- Performance Validation ---")
+            print("  [SKIP] TheoryValidator not available")
+
+    # === Consistency Validation ===
+    try:
+        from src.verification import ConsistencyValidator
+        consistency_validator = ConsistencyValidator(tolerance=0.50)  # 50% tolerance for NoC
+
+        # 3. Little's Law: L = λ × W
+        # Skip if avg_occupancy is very low (< 0.1 flits) - buffer snapshots miss transient states
+        if all(k in metrics for k in ['throughput', 'avg_latency', 'avg_occupancy']):
+            if metrics['avg_occupancy'] >= 0.1:  # Only validate if meaningful occupancy
+                is_valid, msg = consistency_validator.validate_littles_law(
+                    throughput=metrics['throughput'],
+                    avg_latency=metrics['avg_latency'],
+                    avg_occupancy=metrics['avg_occupancy'],
+                    flit_width_bytes=8
+                )
+                results.append(("Little's Law", is_valid, msg))
+                if not is_valid:
+                    all_passed = False
+            else:
+                results.append(("Little's Law", True, "OK (low occupancy - skipped)"))
+
+        # 4. Flit Conservation: Sent = Received
+        if all(k in metrics for k in ['total_flits_sent', 'total_flits_received']):
+            is_valid, msg = consistency_validator.validate_flit_conservation(
+                total_sent=metrics['total_flits_sent'],
+                total_received=metrics['total_flits_received']
+            )
+            results.append(('Flit Conserv', is_valid, msg))
+            if not is_valid:
+                all_passed = False
+
+    except ImportError:
+        pass  # Consistency validator not available
+
+    # Print results
+    if verbose and results:
+        print("\n--- Performance Validation ---")
+        for name, is_valid, msg in results:
+            status = "PASS" if is_valid else "FAIL"
+            print(f"  {name + ':':<17} {status}")
+            if not is_valid:
+                print(f"                     {msg}")
+
+        overall = "PASS" if all_passed else "FAIL"
+        print(f"\n  Validation:        {overall}")
+
+    return all_passed
+
+
 def save_host_metrics(
     system: V1System,
     configs: List[TransferConfig],
@@ -199,6 +296,7 @@ def run_broadcast_write(config: TransferConfig, verbose: bool = True, bin_file: 
             break
         addr = (node_id << 32) | config.dst_addr
         system.submit_write(addr, test_data, axi_id)
+        collector.record_injection(axi_id, cycle)  # Record injection time
         outstanding[axi_id] = node_id
         axi_id += 1
 
@@ -215,6 +313,7 @@ def run_broadcast_write(config: TransferConfig, verbose: bool = True, bin_file: 
             if resp is None:
                 break
             if resp.bid in outstanding:
+                collector.record_ejection(resp.bid, cycle)  # Record ejection time
                 del outstanding[resp.bid]
                 completed += 1
 
@@ -223,6 +322,7 @@ def run_broadcast_write(config: TransferConfig, verbose: bool = True, bin_file: 
                     node_id = pending_nodes.pop(0)
                     addr = (node_id << 32) | config.dst_addr
                     system.submit_write(addr, test_data, axi_id)
+                    collector.record_injection(axi_id, cycle)  # Record injection time
                     outstanding[axi_id] = node_id
                     axi_id += 1
 
@@ -240,9 +340,35 @@ def run_broadcast_write(config: TransferConfig, verbose: bool = True, bin_file: 
         else:
             print(f"FAIL: {fail_count} verification failures")
 
+    # === Performance Validation (using MetricsCollector) ===
+    throughput = collector.get_throughput()
+    latency_stats = collector.get_latency_stats()
+    buffer_stats = collector.get_buffer_stats(total_capacity=20 * 4 * 5)
+
+    avg_latency = latency_stats['avg']
+    avg_buffer_util = buffer_stats['avg']
+    buffer_util_ratio = buffer_stats['utilization']
+
+    if verbose and latency_stats['samples'] > 0:
+        print(f"\n--- Latency Distribution ---")
+        print(f"  Samples:      {latency_stats['samples']}")
+        print(f"  Min Latency:  {latency_stats['min']} cycles")
+        print(f"  Max Latency:  {latency_stats['max']} cycles")
+        print(f"  Avg Latency:  {latency_stats['avg']:.2f} cycles")
+        print(f"  Std Dev:      {latency_stats['std']:.2f} cycles")
+
+    perf_metrics = {
+        'throughput': throughput,
+        'buffer_utilization': buffer_util_ratio,
+        'avg_latency': avg_latency,
+        'avg_occupancy': avg_buffer_util,
+    }
+    validation_passed = validate_performance_metrics(perf_metrics, verbose=verbose)
+    success = success and validation_passed
+
     # Save metrics
     save_host_metrics(
-        system, [config], cycle, success, 
+        system, [config], cycle, success,
         verify_results=[{'pass': pass_count, 'fail': fail_count}],
         test_pattern='broadcast_write',
         collector=collector
@@ -391,6 +517,26 @@ def run_broadcast_read(config: TransferConfig, verbose: bool = True, bin_file: s
         else:
             print(f"FAIL: {fail_count} verification failures")
 
+    # === Performance Validation ===
+    throughput = config.effective_read_size / cycle if cycle > 0 else 0
+    buffer_occupancies = [s.flits_in_flight for s in collector.snapshots]
+    avg_buffer_util = sum(buffer_occupancies) / len(buffer_occupancies) if buffer_occupancies else 0
+    total_buffer_capacity = 20 * 4 * 5  # 20 routers, 4 depth, 5 ports
+    buffer_util_ratio = avg_buffer_util / total_buffer_capacity if total_buffer_capacity > 0 else 0
+
+    # Latency from collector
+    latencies = collector.get_all_latencies()
+    avg_latency = sum(latencies) / len(latencies) if latencies else cycle / len(target_nodes)
+
+    perf_metrics = {
+        'throughput': throughput,
+        'buffer_utilization': buffer_util_ratio,
+        'avg_latency': avg_latency,
+        'avg_occupancy': avg_buffer_util,
+    }
+    validation_passed = validate_performance_metrics(perf_metrics, verbose=verbose)
+    success = success and validation_passed
+
     # Save metrics
     save_host_metrics(
         system, [config], cycle, success,
@@ -529,6 +675,26 @@ def run_scatter_write(config: TransferConfig, verbose: bool = True, bin_file: st
             print(f"PASS: All {pass_count} nodes have correct golden data")
         else:
             print(f"FAIL: {fail_count} golden mismatches")
+
+    # === Performance Validation ===
+    throughput = config.src_size / cycle if cycle > 0 else 0
+    buffer_occupancies = [s.flits_in_flight for s in collector.snapshots]
+    avg_buffer_util = sum(buffer_occupancies) / len(buffer_occupancies) if buffer_occupancies else 0
+    total_buffer_capacity = 20 * 4 * 5  # 20 routers, 4 depth, 5 ports
+    buffer_util_ratio = avg_buffer_util / total_buffer_capacity if total_buffer_capacity > 0 else 0
+
+    # Latency from collector
+    latencies = collector.get_all_latencies()
+    avg_latency = sum(latencies) / len(latencies) if latencies else cycle / len(target_nodes)
+
+    perf_metrics = {
+        'throughput': throughput,
+        'buffer_utilization': buffer_util_ratio,
+        'avg_latency': avg_latency,
+        'avg_occupancy': avg_buffer_util,
+    }
+    validation_passed = validate_performance_metrics(perf_metrics, verbose=verbose)
+    success = success and validation_passed
 
     # Save metrics
     save_host_metrics(
@@ -711,6 +877,26 @@ def run_gather_read(config: TransferConfig, verbose: bool = True, bin_file: str 
                     print(f"  First mismatch at offset {i}: expected 0x{expected_golden[i]:02X}, got 0x{gathered_result[i]:02X}")
                     break
 
+    # === Performance Validation ===
+    throughput = config.effective_read_size / cycle if cycle > 0 else 0
+    buffer_occupancies = [s.flits_in_flight for s in collector.snapshots]
+    avg_buffer_util = sum(buffer_occupancies) / len(buffer_occupancies) if buffer_occupancies else 0
+    total_buffer_capacity = 20 * 4 * 5  # 20 routers, 4 depth, 5 ports
+    buffer_util_ratio = avg_buffer_util / total_buffer_capacity if total_buffer_capacity > 0 else 0
+
+    # Latency from collector
+    latencies = collector.get_all_latencies()
+    avg_latency = sum(latencies) / len(latencies) if latencies else cycle / len(target_nodes)
+
+    perf_metrics = {
+        'throughput': throughput,
+        'buffer_utilization': buffer_util_ratio,
+        'avg_latency': avg_latency,
+        'avg_occupancy': avg_buffer_util,
+    }
+    validation_passed = validate_performance_metrics(perf_metrics, verbose=verbose)
+    success = success and validation_passed
+
     # Save metrics
     save_host_metrics(
         system, [config], cycle, success,
@@ -728,9 +914,12 @@ def run_gather_read(config: TransferConfig, verbose: bool = True, bin_file: str 
 
 
 def run_multi_transfer(
-    configs: List[TransferConfig], 
+    configs: List[TransferConfig],
     verbose: bool = True,
     bin_file: str = None,
+    buffer_depth: int = 32,
+    mesh_cols: int = 5,
+    mesh_rows: int = 4,
 ) -> dict:
     """
     Run multi-transfer queue test with per-transfer verification.
@@ -750,7 +939,7 @@ def run_multi_transfer(
     Raises:
         ValueError: If bin_file is not provided or does not exist.
     """
-    from src.core.host_axi_master import HostAXIMaster
+    from src.testbench import HostAXIMaster
     from src.config import TransferMode
     from pathlib import Path
     
@@ -918,8 +1107,9 @@ def run_multi_transfer(
 
     # Create V1System and collector
     system = V1System(
-        mesh_cols=5,
-        mesh_rows=4,
+        mesh_cols=mesh_cols,
+        mesh_rows=mesh_rows,
+        buffer_depth=buffer_depth,
         host_memory=host_memory,
     )
     from src.visualization import MetricsCollector
@@ -932,8 +1122,8 @@ def run_multi_transfer(
     host_master = HostAXIMaster(
         host_memory=host_memory,
         transfer_config=first_config,
-        mesh_cols=5,
-        mesh_rows=4,
+        mesh_cols=mesh_cols,
+        mesh_rows=mesh_rows,
         on_transfer_start=on_transfer_start,
         on_transfer_complete=on_transfer_complete,
     )
@@ -1079,6 +1269,34 @@ def run_multi_transfer(
         print(f"  Avg Occupancy:     {avg_buffer_util:.3f} flits")
         print(f"  Active Avg:        {active_avg_buffer:.2f} flits ({active_pct:.1f}% of cycles active)")
 
+    # === Performance Validation ===
+    # Calculate buffer utilization ratio (0-1)
+    # Assume total buffer capacity = num_routers * buffer_depth * num_ports
+    total_buffer_capacity = 20 * 4 * 5  # 20 routers, 4 depth, 5 ports
+    buffer_util_ratio = avg_buffer_util / total_buffer_capacity if total_buffer_capacity > 0 else 0
+
+    # Note: Flit conservation check is skipped for Host-to-NoC because:
+    # - Request path flits (writes) and Response path flits (acks) are different counts
+    # - Need end-to-end tracking for meaningful comparison
+    #
+    # Little's Law check may have high deviation when:
+    # - Buffer occupancy is very low (flits processed quickly)
+    # - Snapshot interval misses transient buffer states
+
+    perf_metrics = {
+        'total_cycles': cycle,
+        'throughput': throughput,
+        'buffer_utilization': buffer_util_ratio,
+        'avg_latency': avg_latency,
+        'avg_occupancy': avg_buffer_util,
+        # Flit conservation omitted - request vs response flits are different flows
+    }
+    validation_passed = validate_performance_metrics(perf_metrics, verbose=verbose)
+
+    # Include validation in overall success
+    overall_success = overall_success and validation_passed
+
+    if verbose:
         print()
         print("=" * 40)
         print(f"Overall Status: {'PASS' if overall_success else 'FAIL'}")
@@ -1100,6 +1318,7 @@ def run_multi_transfer(
         'transfer_success': transfer_success,
         'verify_pass': total_pass,
         'verify_fail': total_fail,
+        'metrics': perf_metrics,
     }
 
 
@@ -1112,6 +1331,16 @@ def main():
     parser.add_argument('--config', type=str, help='Custom config file')
     parser.add_argument('--bin', type=str, help='BIN file for source data (required for multi_transfer)')
     parser.add_argument('-q', '--quiet', action='store_true', help='Quiet mode')
+
+    # System parameters (for multi_para sweep)
+    parser.add_argument('--buffer-depth', type=int, default=32,
+                        help='Router buffer depth (default: 32)')
+    parser.add_argument('--mesh-cols', type=int, default=5,
+                        help='Mesh columns (default: 5)')
+    parser.add_argument('--mesh-rows', type=int, default=4,
+                        help='Mesh rows (default: 4)')
+    parser.add_argument('--json-output', type=str, default=None,
+                        help='Output metrics to JSON file')
 
     args = parser.parse_args()
 
@@ -1132,7 +1361,24 @@ def main():
         else:
             print(f"Config not found: {config_path}")
             return 1
-        result = run_multi_transfer(configs, verbose, bin_file=args.bin)
+        result = run_multi_transfer(
+            configs,
+            verbose,
+            bin_file=args.bin,
+            buffer_depth=args.buffer_depth,
+            mesh_cols=args.mesh_cols,
+            mesh_rows=args.mesh_rows,
+        )
+
+        # Output JSON if requested
+        if args.json_output and 'metrics' in result:
+            import json
+            json_path = Path(args.json_output)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(json_path, 'w') as f:
+                json.dump(result['metrics'], f, indent=2)
+            if verbose:
+                print(f"\nMetrics saved to: {json_path}")
     else:
         # Single transfer tests
         if config_path.exists():

@@ -10,8 +10,8 @@ import pytest
 
 from src.config import TransferConfig, TransferMode
 from src.core.routing_selector import V1System
-from src.core.memory import Memory, MemoryConfig
-from src.core.golden_manager import GoldenSource, GoldenKey
+from src.testbench import Memory, MemoryConfig
+from src.verification import GoldenSource, GoldenKey
 
 
 class TestScatterWrite:

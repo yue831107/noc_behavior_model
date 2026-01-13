@@ -13,7 +13,7 @@ Tests verify:
 import pytest
 from src.core.router import Direction, RouterPort, PortWire, Router
 from src.core.ni import MasterNI, NIConfig
-from src.core.flit import FlitFactory, FlitType
+from src.core.flit import FlitFactory, AxiChannel
 
 
 class TestRouterToNIForwarding:

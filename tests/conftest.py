@@ -8,7 +8,11 @@ and network topologies used across unit and integration tests.
 import pytest
 from typing import Tuple, List, Optional
 
-from src.core.flit import Flit, FlitType, FlitFactory
+from src.core.flit import (
+    Flit, FlitFactory, FlitHeader, AxiChannel,
+    AxiAwPayload, AxiWPayload, AxiArPayload, AxiBPayload, AxiRPayload,
+    encode_node_id, decode_node_id
+)
 from src.core.buffer import FlitBuffer
 from src.core.router import (
     Direction, RouterConfig, RouterPort, PortWire,
@@ -62,108 +66,153 @@ def ni_config() -> NIConfig:
 
 @pytest.fixture(autouse=True)
 def reset_flit_counters():
-    """Reset packet/flit ID counters before each test."""
-    FlitFactory.reset_packet_id()
+    """Reset RoB index counter before each test."""
+    FlitFactory.reset()
     yield
 
 
 @pytest.fixture
 def single_flit_factory():
-    """Factory for creating single-flit packets."""
+    """Factory for creating single-flit packets (FlooNoC style)."""
     def _create(
         src: Tuple[int, int],
         dest: Tuple[int, int],
         is_request: bool = True,
-        payload: bytes = b"test_data"
+        payload: bytes = b"test_data",
+        axi_ch: AxiChannel = None,
     ) -> Flit:
-        return FlitFactory.create_single(
-            src=src,
-            dest=dest,
-            is_request=is_request,
-            payload=payload,
-            timestamp=0,
-        )
+        """
+        Create a single-flit packet.
+
+        For requests: creates AR flit (read address)
+        For responses: creates B flit (write response)
+        """
+        if axi_ch is None:
+            axi_ch = AxiChannel.AR if is_request else AxiChannel.B
+
+        if axi_ch == AxiChannel.AR:
+            return FlitFactory.create_ar(
+                src=src,
+                dest=dest,
+                addr=0x1000,
+                axi_id=0,
+                length=0,
+            )
+        elif axi_ch == AxiChannel.B:
+            return FlitFactory.create_b(
+                src=src,
+                dest=dest,
+                axi_id=0,
+                resp=0,
+            )
+        elif axi_ch == AxiChannel.AW:
+            return FlitFactory.create_aw(
+                src=src,
+                dest=dest,
+                addr=0x1000,
+                axi_id=0,
+                length=0,
+                last=True,  # Single flit AW (no W follows)
+            )
+        elif axi_ch == AxiChannel.R:
+            return FlitFactory.create_r(
+                src=src,
+                dest=dest,
+                data=payload if len(payload) <= 32 else payload[:32],
+                axi_id=0,
+                last=True,
+            )
+        else:  # W
+            return FlitFactory.create_w(
+                src=src,
+                dest=dest,
+                data=payload if len(payload) <= 32 else payload[:32],
+                last=True,
+            )
     return _create
 
 
 @pytest.fixture
 def multi_flit_packet_factory():
-    """Factory for creating multi-flit packets."""
+    """Factory for creating multi-flit packets (FlooNoC style)."""
     def _create(
         src: Tuple[int, int],
         dest: Tuple[int, int],
         num_flits: int = 3,
-        is_request: bool = True
+        is_request: bool = True,
     ) -> List[Flit]:
-        """Create a packet with specified number of flits (HEAD + BODY* + TAIL)."""
-        packet_id = FlitFactory._next_packet_id()
+        """
+        Create a packet with specified number of flits.
+
+        For requests: creates AW + W flit(s)
+        For responses: creates R flit(s)
+
+        FlooNoC format uses 'last' bit instead of HEAD/BODY/TAIL types.
+        """
         flits = []
+        rob_idx = FlitFactory._next_rob_idx()
 
-        if num_flits == 1:
-            # Single flit packet
-            flits.append(Flit(
-                flit_type=FlitType.HEAD_TAIL,
-                src=src,
-                dest=dest,
-                packet_id=packet_id,
-                seq_num=0,
-                is_request=is_request,
-                payload=b"SINGLE",
-            ))
-        elif num_flits == 2:
-            # HEAD + TAIL only
-            flits.append(Flit(
-                flit_type=FlitType.HEAD,
-                src=src,
-                dest=dest,
-                packet_id=packet_id,
-                seq_num=0,
-                is_request=is_request,
-                payload=b"HEAD",
-            ))
-            flits.append(Flit(
-                flit_type=FlitType.TAIL,
-                src=src,
-                dest=dest,
-                packet_id=packet_id,
-                seq_num=1,
-                is_request=is_request,
-                payload=b"TAIL",
-            ))
-        else:
-            # HEAD flit
-            flits.append(Flit(
-                flit_type=FlitType.HEAD,
-                src=src,
-                dest=dest,
-                packet_id=packet_id,
-                seq_num=0,
-                is_request=is_request,
-                payload=b"HEAD",
-            ))
-
-            # BODY flits
-            for i in range(1, num_flits - 1):
-                flits.append(Flit(
-                    flit_type=FlitType.BODY,
+        if is_request:
+            # Request: AW flit + W flit(s)
+            if num_flits == 1:
+                # Single W flit (for simple data transfer)
+                flits.append(FlitFactory.create_w(
                     src=src,
                     dest=dest,
-                    packet_id=packet_id,
-                    seq_num=i,
-                    is_request=is_request,
-                    payload=f"BODY{i}".encode(),
+                    data=b"SINGLE" + bytes(26),
+                    last=True,
+                    rob_idx=rob_idx,
+                    seq_num=0,
+                ))
+            else:
+                # AW flit (not last, W follows)
+                flits.append(FlitFactory.create_aw(
+                    src=src,
+                    dest=dest,
+                    addr=0x1000,
+                    axi_id=0,
+                    length=num_flits - 2,  # Number of W beats - 1
+                    rob_idx=rob_idx,
+                    rob_req=True,
+                    last=False,  # W flit(s) follow
                 ))
 
-            # TAIL flit
-            flits.append(Flit(
-                flit_type=FlitType.TAIL,
-                src=src,
-                dest=dest,
-                packet_id=packet_id,
-                seq_num=num_flits - 1,
-                is_request=is_request,
-                payload=b"TAIL",
-            ))
+                # W flits
+                for i in range(num_flits - 1):
+                    is_last = (i == num_flits - 2)
+                    data = b"TAIL" if is_last else f"BODY{i}".encode()
+                    data = data + bytes(32 - len(data))
+                    flits.append(FlitFactory.create_w(
+                        src=src,
+                        dest=dest,
+                        data=data,
+                        last=is_last,
+                        rob_idx=rob_idx,
+                        seq_num=i,
+                    ))
+        else:
+            # Response: R flit(s)
+            for i in range(num_flits):
+                is_last = (i == num_flits - 1)
+                if num_flits == 1:
+                    data = b"SINGLE" + bytes(26)
+                elif is_last:
+                    data = b"TAIL" + bytes(28)
+                elif i == 0:
+                    data = b"HEAD" + bytes(28)
+                else:
+                    data = f"BODY{i}".encode()
+                    data = data + bytes(32 - len(data))
+
+                flits.append(FlitFactory.create_r(
+                    src=src,
+                    dest=dest,
+                    data=data,
+                    axi_id=0,
+                    last=is_last,
+                    rob_idx=rob_idx,
+                    seq_num=i,
+                ))
 
         return flits
     return _create

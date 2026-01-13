@@ -4,8 +4,8 @@ Unit tests for NoC-to-NoC golden data generation and verification.
 
 import pytest
 
-from src.core.golden_manager import GoldenManager, GoldenSource
-from src.core.memory import Memory, MemoryConfig
+from src.verification import GoldenManager, GoldenSource
+from src.testbench import Memory, MemoryConfig
 from src.config import NodeTransferConfig, TrafficPattern
 from src.traffic.pattern_generator import TrafficPatternGenerator
 

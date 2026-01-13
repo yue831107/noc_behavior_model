@@ -1,27 +1,20 @@
 """
-Packet encapsulation and flit assembly/disassembly.
+Packet encapsulation and flit assembly/disassembly - FlooNoC Style.
 
 A Packet represents a complete NoC transaction, consisting of
-multiple Flits (HEAD + BODY* + TAIL or single HEAD_TAIL).
+multiple FlooNoC-style Flits (AW+W* for writes, AR for reads, B/R* for responses).
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional, List, Iterator
+from typing import Optional, List, Tuple
 from enum import Enum, auto
-import struct
 
-from .flit import Flit, FlitType, FlitFactory
-
-
-# Packet header format (12 bytes):
-# - packet_type: 1 byte
-# - axi_id: 1 byte
-# - reserved: 2 bytes
-# - local_addr: 4 bytes
-# - payload_len: 4 bytes
-PACKET_HEADER_FORMAT = "<BBHI I"
-PACKET_HEADER_SIZE = 12
+from .flit import (
+    Flit, FlitHeader, FlitFactory, AxiChannel,
+    AxiAwPayload, AxiWPayload, AxiArPayload, AxiBPayload, AxiRPayload,
+    encode_node_id, decode_node_id,
+)
 
 
 class PacketType(Enum):
@@ -38,72 +31,41 @@ class Packet:
     Packet data structure.
 
     A packet is a complete unit of NoC transaction, composed of
-    one or more flits.
+    one or more FlooNoC-style flits.
 
     Attributes:
-        packet_id: Unique packet identifier.
+        packet_id: Unique packet identifier (rob_idx for tracking).
         packet_type: Type of packet (WRITE_REQ, READ_REQ, etc.).
         src: Source coordinate (x, y).
         dest: Destination coordinate (x, y).
-        src_ni_id: Source NI ID (for multi-NI routing).
         axi_id: AXI transaction ID.
         local_addr: 32-bit local address at destination.
         payload: Complete payload data.
-        timestamp: Creation timestamp.
+        read_size: For READ_REQ: number of bytes to read.
+        rob_idx: RoB index for response matching.
     """
     packet_id: int
     packet_type: PacketType
-    src: tuple[int, int]
-    dest: tuple[int, int]
-    src_ni_id: int = 0
+    src: Tuple[int, int]
+    dest: Tuple[int, int]
     axi_id: int = 0
     local_addr: int = 0
     payload: bytes = field(default_factory=bytes)
+    read_size: int = 0
+    rob_idx: int = 0
     timestamp: int = 0
-    read_size: int = 0  # For READ_REQ: number of bytes to read
 
     # Tracking
     flits: List[Flit] = field(default_factory=list)
     _assembled: bool = field(default=False, repr=False)
 
+    # For backward compatibility
+    src_ni_id: int = 0
+
     @property
     def is_request(self) -> bool:
         """Check if this is a request packet."""
         return self.packet_type in (PacketType.WRITE_REQ, PacketType.READ_REQ)
-
-    def serialize_header(self) -> bytes:
-        """Serialize packet header to bytes."""
-        # For READ_REQ, store read_size in the reserved field (16-bit)
-        reserved = self.read_size & 0xFFFF if self.packet_type == PacketType.READ_REQ else 0
-        return struct.pack(
-            PACKET_HEADER_FORMAT,
-            self.packet_type.value,
-            self.axi_id & 0xFF,
-            reserved,  # Contains read_size for READ_REQ
-            self.local_addr,
-            len(self.payload),
-        )
-
-    @classmethod
-    def deserialize_header(cls, data: bytes) -> tuple:
-        """
-        Deserialize packet header from bytes.
-
-        Returns:
-            Tuple of (packet_type, axi_id, local_addr, payload_len, read_size).
-        """
-        unpacked = struct.unpack(PACKET_HEADER_FORMAT, data[:PACKET_HEADER_SIZE])
-        packet_type = PacketType(unpacked[0])
-        axi_id = unpacked[1]
-        reserved = unpacked[2]  # Contains read_size for READ_REQ
-        local_addr = unpacked[3]
-        payload_len = unpacked[4]
-        read_size = reserved if packet_type == PacketType.READ_REQ else 0
-        return packet_type, axi_id, local_addr, payload_len, read_size
-
-    def get_serialized_payload(self) -> bytes:
-        """Get payload with header prepended."""
-        return self.serialize_header() + self.payload
 
     @property
     def is_response(self) -> bool:
@@ -123,33 +85,35 @@ class Packet:
     def __repr__(self) -> str:
         return (
             f"Packet(id={self.packet_id}, {self.packet_type.name}, "
-            f"{self.src}→{self.dest}, flits={self.flit_count})"
+            f"{self.src}->{self.dest}, flits={self.flit_count})"
         )
 
 
 class PacketAssembler:
     """
-    Assembles a Packet into Flits for transmission.
+    Assembles a Packet into FlooNoC-style Flits for transmission.
 
-    Handles splitting payload into multiple flits based on
-    flit payload capacity.
+    Write request: AW + W* (one or more W flits)
+    Read request: AR (single flit)
+    Write response: B (single flit)
+    Read response: R* (one or more R flits)
     """
 
-    def __init__(self, flit_payload_size: int = 8):
+    # FlooNoC flit payload size is 32 bytes (256 bits)
+    FLIT_PAYLOAD_SIZE = 32
+
+    def __init__(self, flit_payload_size: int = 32):
         """
         Initialize assembler.
 
         Args:
-            flit_payload_size: Maximum payload bytes per flit.
+            flit_payload_size: Maximum payload bytes per flit (default 32).
         """
         self.flit_payload_size = flit_payload_size
 
     def assemble(self, packet: Packet, timestamp: int = 0) -> List[Flit]:
         """
-        Assemble a packet into flits.
-
-        The packet header (type, axi_id, local_addr, payload_len) is
-        prepended to the payload before splitting into flits.
+        Assemble a packet into FlooNoC-style flits.
 
         Args:
             packet: Packet to assemble.
@@ -161,120 +125,195 @@ class PacketAssembler:
         if packet._assembled:
             return packet.flits
 
-        flits = []
-        # Include packet header in the serialized data
-        payload = packet.get_serialized_payload()
-        total_payload_size = len(payload)
-
-        # Calculate number of flits needed
-        if total_payload_size == 0:
-            # Single flit packet (e.g., read request)
-            flit = FlitFactory.create_single(
-                src=packet.src,
-                dest=packet.dest,
-                packet_id=packet.packet_id,
-                src_ni_id=packet.src_ni_id,
-                is_request=packet.is_request,
-                payload=b"",
-                timestamp=timestamp,
-            )
-            flits.append(flit)
-        elif total_payload_size <= self.flit_payload_size:
-            # Single flit with payload
-            flit = FlitFactory.create_single(
-                src=packet.src,
-                dest=packet.dest,
-                packet_id=packet.packet_id,
-                src_ni_id=packet.src_ni_id,
-                is_request=packet.is_request,
-                payload=payload,
-                timestamp=timestamp,
-            )
-            flits.append(flit)
+        if packet.packet_type == PacketType.WRITE_REQ:
+            flits = self._assemble_write_request(packet)
+        elif packet.packet_type == PacketType.READ_REQ:
+            flits = self._assemble_read_request(packet)
+        elif packet.packet_type == PacketType.WRITE_RESP:
+            flits = self._assemble_write_response(packet)
+        elif packet.packet_type == PacketType.READ_RESP:
+            flits = self._assemble_read_response(packet)
         else:
-            # Multi-flit packet
-            offset = 0
-            seq_num = 0
-
-            # HEAD flit
-            head_payload = payload[offset:offset + self.flit_payload_size]
-            offset += self.flit_payload_size
-            head = FlitFactory.create_head(
-                src=packet.src,
-                dest=packet.dest,
-                packet_id=packet.packet_id,
-                src_ni_id=packet.src_ni_id,
-                is_request=packet.is_request,
-                payload=head_payload,
-                timestamp=timestamp,
-            )
-            flits.append(head)
-            seq_num += 1
-
-            # BODY flits
-            while offset + self.flit_payload_size < total_payload_size:
-                body_payload = payload[offset:offset + self.flit_payload_size]
-                offset += self.flit_payload_size
-                body = FlitFactory.create_body(
-                    src=packet.src,
-                    dest=packet.dest,
-                    packet_id=packet.packet_id,
-                    seq_num=seq_num,
-                    is_request=packet.is_request,
-                    payload=body_payload,
-                    timestamp=timestamp,
-                )
-                flits.append(body)
-                seq_num += 1
-
-            # TAIL flit
-            tail_payload = payload[offset:]
-            tail = FlitFactory.create_tail(
-                src=packet.src,
-                dest=packet.dest,
-                packet_id=packet.packet_id,
-                seq_num=seq_num,
-                is_request=packet.is_request,
-                payload=tail_payload,
-                timestamp=timestamp,
-            )
-            flits.append(tail)
+            raise ValueError(f"Unknown packet type: {packet.packet_type}")
 
         packet.flits = flits
         packet._assembled = True
+        return flits
+
+    def _assemble_write_request(self, packet: Packet) -> List[Flit]:
+        """Assemble write request into AW + W* flits."""
+        flits = []
+        data = packet.payload
+        data_len = len(data)
+
+        # Calculate number of W flits needed
+        if data_len == 0:
+            num_w_flits = 1
+        else:
+            num_w_flits = (data_len + self.flit_payload_size - 1) // self.flit_payload_size
+
+        # AW flit (no last=True because W follows)
+        aw_flit = FlitFactory.create_aw(
+            src=packet.src,
+            dest=packet.dest,
+            addr=packet.local_addr,
+            axi_id=packet.axi_id,
+            length=num_w_flits - 1,  # awlen = num_beats - 1
+            size=5,  # 32 bytes
+            burst=1,  # INCR
+            rob_idx=packet.rob_idx,
+            rob_req=True,
+            last=False,
+        )
+        flits.append(aw_flit)
+
+        # W flits
+        offset = 0
+        for i in range(num_w_flits):
+            is_last_w = (i == num_w_flits - 1)
+
+            # Get data for this flit
+            if data_len == 0:
+                chunk = bytes(self.flit_payload_size)
+                strb = 0  # No valid bytes
+            else:
+                chunk = data[offset:offset + self.flit_payload_size]
+                valid_bytes = len(chunk)
+
+                # Calculate strb mask based on actual valid bytes
+                # strb bit i = 1 means byte i is valid
+                if valid_bytes >= self.flit_payload_size:
+                    strb = 0xFFFFFFFF  # All 32 bytes valid
+                else:
+                    # Only first valid_bytes are valid
+                    strb = (1 << valid_bytes) - 1
+
+                # Pad chunk to flit_payload_size
+                if len(chunk) < self.flit_payload_size:
+                    chunk = chunk + bytes(self.flit_payload_size - len(chunk))
+
+                offset += self.flit_payload_size
+
+            w_flit = FlitFactory.create_w(
+                src=packet.src,
+                dest=packet.dest,
+                data=chunk,
+                strb=strb,
+                last=is_last_w,
+                rob_idx=packet.rob_idx,
+                seq_num=i,
+            )
+            flits.append(w_flit)
+
+        return flits
+
+    def _assemble_read_request(self, packet: Packet) -> List[Flit]:
+        """Assemble read request into AR flit."""
+        # Calculate number of R flits expected in response
+        if packet.read_size == 0:
+            length = 0
+        else:
+            length = (packet.read_size + self.flit_payload_size - 1) // self.flit_payload_size - 1
+
+        ar_flit = FlitFactory.create_ar(
+            src=packet.src,
+            dest=packet.dest,
+            addr=packet.local_addr,
+            axi_id=packet.axi_id,
+            length=length,
+            size=5,  # 32 bytes
+            burst=1,  # INCR
+            rob_idx=packet.rob_idx,
+            rob_req=True,
+        )
+        return [ar_flit]
+
+    def _assemble_write_response(self, packet: Packet) -> List[Flit]:
+        """Assemble write response into B flit."""
+        b_flit = FlitFactory.create_b(
+            src=packet.src,
+            dest=packet.dest,
+            axi_id=packet.axi_id,
+            resp=0,  # OKAY
+            rob_idx=packet.rob_idx,
+        )
+        return [b_flit]
+
+    def _assemble_read_response(self, packet: Packet) -> List[Flit]:
+        """Assemble read response into R* flits."""
+        flits = []
+        data = packet.payload
+        data_len = len(data)
+
+        if data_len == 0:
+            # Single R flit with no data
+            r_flit = FlitFactory.create_r(
+                src=packet.src,
+                dest=packet.dest,
+                data=bytes(self.flit_payload_size),
+                axi_id=packet.axi_id,
+                resp=0,
+                last=True,
+                rob_idx=packet.rob_idx,
+                seq_num=0,
+            )
+            return [r_flit]
+
+        # Multiple R flits
+        num_r_flits = (data_len + self.flit_payload_size - 1) // self.flit_payload_size
+        offset = 0
+
+        for i in range(num_r_flits):
+            is_last_r = (i == num_r_flits - 1)
+            chunk = data[offset:offset + self.flit_payload_size]
+
+            # Pad chunk to flit_payload_size
+            if len(chunk) < self.flit_payload_size:
+                chunk = chunk + bytes(self.flit_payload_size - len(chunk))
+
+            offset += self.flit_payload_size
+
+            r_flit = FlitFactory.create_r(
+                src=packet.src,
+                dest=packet.dest,
+                data=chunk,
+                axi_id=packet.axi_id,
+                resp=0,
+                last=is_last_r,
+                rob_idx=packet.rob_idx,
+                seq_num=i,
+            )
+            flits.append(r_flit)
+
         return flits
 
     def calculate_flit_count(self, payload_size: int) -> int:
         """
         Calculate number of flits needed for given payload size.
 
-        Args:
-            payload_size: Payload size in bytes.
-
-        Returns:
-            Number of flits required.
+        For write: 1 AW + ceil(payload_size / flit_payload_size) W flits
         """
         if payload_size == 0:
-            return 1
-        if payload_size <= self.flit_payload_size:
-            return 1
-        # HEAD + BODY* + TAIL
-        # HEAD and TAIL each carry flit_payload_size
-        # Remaining goes into BODY flits
-        return (payload_size + self.flit_payload_size - 1) // self.flit_payload_size
+            return 2  # AW + 1 W
+        w_flits = (payload_size + self.flit_payload_size - 1) // self.flit_payload_size
+        return 1 + w_flits  # AW + W*
 
 
 class PacketDisassembler:
     """
-    Disassembles Flits back into a Packet.
+    Disassembles FlooNoC-style Flits back into a Packet.
 
-    Collects flits with the same packet_id and reconstructs
-    the original packet.
+    Collects flits and reconstructs the original packet.
+    Uses strb mask to extract only valid bytes from W flits.
     """
+
+    # FlooNoC flit payload size is 32 bytes (256 bits)
+    FLIT_PAYLOAD_SIZE = 32
 
     def __init__(self):
         """Initialize disassembler."""
-        self._pending: dict[int, List[Flit]] = {}  # packet_id -> flits
+        # Pending packets: key = (src_id, rob_idx), value = list of flits
+        self._pending: dict[tuple[int, int], List[Flit]] = {}
 
     def receive_flit(self, flit: Flit) -> Optional[Packet]:
         """
@@ -286,37 +325,62 @@ class PacketDisassembler:
         Returns:
             Reconstructed Packet if complete, None otherwise.
         """
-        packet_id = flit.packet_id
+        # Use src_id and rob_idx as key for matching
+        key = (flit.hdr.src_id, flit.hdr.rob_idx)
 
         # Single flit packet
         if flit.is_single_flit():
             return self._create_packet_from_flits([flit])
 
         # Multi-flit packet
-        if packet_id not in self._pending:
+        if key not in self._pending:
             if not flit.is_head():
                 # Received non-HEAD as first flit - error state
-                # In production, this would need error handling
                 return None
-            self._pending[packet_id] = []
+            self._pending[key] = []
 
-        self._pending[packet_id].append(flit)
+        self._pending[key].append(flit)
 
         # Check if packet is complete
         if flit.is_tail():
-            flits = self._pending.pop(packet_id)
+            flits = self._pending.pop(key)
             return self._create_packet_from_flits(flits)
 
         return None
 
-    def _create_packet_from_flits(self, flits: List[Flit]) -> Packet:
+    def _count_valid_bytes(self, strb: int) -> int:
         """
-        Create a Packet from a list of flits.
+        Count number of valid bytes from strb mask.
 
-        The flit payload contains: [packet_header (12 bytes)][actual_payload]
+        Assumes contiguous valid bytes starting from byte 0.
 
         Args:
-            flits: List of flits (HEAD...TAIL or HEAD_TAIL).
+            strb: 32-bit strobe mask.
+
+        Returns:
+            Number of valid bytes.
+        """
+        if strb == 0xFFFFFFFF:
+            return 32
+        if strb == 0:
+            return 0
+
+        # Count contiguous bits from LSB
+        count = 0
+        mask = strb
+        while mask & 1:
+            count += 1
+            mask >>= 1
+        return count
+
+    def _create_packet_from_flits(self, flits: List[Flit]) -> Packet:
+        """
+        Create a Packet from a list of FlooNoC-style flits.
+
+        Uses strb to extract only valid bytes from W flits.
+
+        Args:
+            flits: List of flits.
 
         Returns:
             Reconstructed Packet.
@@ -325,38 +389,73 @@ class PacketDisassembler:
             raise ValueError("Cannot create packet from empty flit list")
 
         head = flits[0]
+        hdr = head.hdr
 
-        # Reconstruct full serialized payload
-        serialized = b"".join(f.payload for f in flits)
-
-        # Parse packet header
-        if len(serialized) >= PACKET_HEADER_SIZE:
-            packet_type, axi_id, local_addr, payload_len, read_size = \
-                Packet.deserialize_header(serialized)
-            actual_payload = serialized[PACKET_HEADER_SIZE:]
+        # Determine packet type from first flit's AXI channel
+        if hdr.axi_ch == AxiChannel.AW:
+            packet_type = PacketType.WRITE_REQ
+        elif hdr.axi_ch == AxiChannel.AR:
+            packet_type = PacketType.READ_REQ
+        elif hdr.axi_ch == AxiChannel.B:
+            packet_type = PacketType.WRITE_RESP
+        elif hdr.axi_ch == AxiChannel.R:
+            packet_type = PacketType.READ_RESP
+        elif hdr.axi_ch == AxiChannel.W:
+            # W should not be first flit, but handle it
+            packet_type = PacketType.WRITE_REQ
         else:
-            # Fallback for malformed packets
-            if head.is_request:
-                packet_type = PacketType.WRITE_REQ
-            else:
-                packet_type = PacketType.WRITE_RESP
-            axi_id = 0
-            local_addr = 0
-            actual_payload = serialized
-            read_size = 0
+            packet_type = PacketType.WRITE_REQ
+
+        # Extract metadata from header flit
+        src = decode_node_id(hdr.src_id)
+        dest = decode_node_id(hdr.dst_id)
+        rob_idx = hdr.rob_idx
+        axi_id = 0
+        local_addr = 0
+        read_size = 0
+
+        if isinstance(head.payload, AxiAwPayload):
+            axi_id = head.payload.axi_id
+            local_addr = head.payload.addr
+        elif isinstance(head.payload, AxiArPayload):
+            axi_id = head.payload.axi_id
+            local_addr = head.payload.addr
+            # Calculate read_size from length
+            read_size = (head.payload.length + 1) * self.FLIT_PAYLOAD_SIZE
+        elif isinstance(head.payload, AxiBPayload):
+            axi_id = head.payload.axi_id
+        elif isinstance(head.payload, AxiRPayload):
+            axi_id = head.payload.axi_id
+
+        # Reconstruct payload data
+        payload = b""
+
+        for flit in flits:
+            pl = flit.payload
+
+            if isinstance(pl, AxiWPayload):
+                # Use strb to extract only valid bytes - THIS IS THE FIX
+                valid_bytes = self._count_valid_bytes(pl.strb)
+                if valid_bytes > 0:
+                    payload += pl.data[:valid_bytes]
+
+            elif isinstance(pl, AxiRPayload):
+                # R flits always have full data (no strb)
+                # For last R flit, we might need to trim based on expected size
+                # But since read_size tracking is complex, include all data
+                payload += pl.data
 
         packet = Packet(
-            packet_id=head.packet_id,
+            packet_id=rob_idx,
             packet_type=packet_type,
-            src=head.src,
-            dest=head.dest,
-            src_ni_id=head.src_ni_id,
+            src=src,
+            dest=dest,
             axi_id=axi_id,
             local_addr=local_addr,
-            payload=actual_payload,
-            timestamp=head.timestamp,
+            payload=payload,
+            read_size=read_size,
+            rob_idx=rob_idx,
         )
-        packet.read_size = read_size
         packet.flits = flits
         packet._assembled = True
 
@@ -375,24 +474,25 @@ class PacketDisassembler:
 class PacketFactory:
     """Factory for creating packets."""
 
-    _packet_id_counter: int = 0
+    _rob_idx_counter: int = 0
 
     @classmethod
-    def _next_packet_id(cls) -> int:
-        """Generate next packet ID."""
-        cls._packet_id_counter += 1
-        return cls._packet_id_counter
+    def _next_rob_idx(cls) -> int:
+        """Generate next RoB index (wraps at 32)."""
+        idx = cls._rob_idx_counter
+        cls._rob_idx_counter = (cls._rob_idx_counter + 1) % 32
+        return idx
 
     @classmethod
     def reset_packet_id(cls) -> None:
         """Reset packet ID counter (for testing)."""
-        cls._packet_id_counter = 0
+        cls._rob_idx_counter = 0
 
     @classmethod
     def create_write_request(
         cls,
-        src: tuple[int, int],
-        dest: tuple[int, int],
+        src: Tuple[int, int],
+        dest: Tuple[int, int],
         local_addr: int,
         data: bytes,
         axi_id: int = 0,
@@ -400,23 +500,25 @@ class PacketFactory:
         timestamp: int = 0,
     ) -> Packet:
         """Create a write request packet."""
+        rob_idx = cls._next_rob_idx()
         return Packet(
-            packet_id=cls._next_packet_id(),
+            packet_id=rob_idx,
             packet_type=PacketType.WRITE_REQ,
             src=src,
             dest=dest,
-            src_ni_id=src_ni_id,
             axi_id=axi_id,
             local_addr=local_addr,
             payload=data,
+            rob_idx=rob_idx,
             timestamp=timestamp,
+            src_ni_id=src_ni_id,
         )
 
     @classmethod
     def create_read_request(
         cls,
-        src: tuple[int, int],
-        dest: tuple[int, int],
+        src: Tuple[int, int],
+        dest: Tuple[int, int],
         local_addr: int,
         read_size: int = 0,
         axi_id: int = 0,
@@ -424,19 +526,20 @@ class PacketFactory:
         timestamp: int = 0,
     ) -> Packet:
         """Create a read request packet."""
-        pkt = Packet(
-            packet_id=cls._next_packet_id(),
+        rob_idx = cls._next_rob_idx()
+        return Packet(
+            packet_id=rob_idx,
             packet_type=PacketType.READ_REQ,
             src=src,
             dest=dest,
-            src_ni_id=src_ni_id,
             axi_id=axi_id,
             local_addr=local_addr,
-            payload=b"",  # Read request has no data payload
+            payload=b"",
+            read_size=read_size,
+            rob_idx=rob_idx,
             timestamp=timestamp,
+            src_ni_id=src_ni_id,
         )
-        pkt.read_size = read_size
-        return pkt
 
     @classmethod
     def create_write_response(
@@ -446,14 +549,14 @@ class PacketFactory:
     ) -> Packet:
         """Create a write response packet from a request."""
         return Packet(
-            packet_id=cls._next_packet_id(),
+            packet_id=request.rob_idx,
             packet_type=PacketType.WRITE_RESP,
-            src=request.dest,  # Response from original destination
-            dest=request.src,  # Response to original source
-            src_ni_id=request.src_ni_id,
+            src=request.dest,
+            dest=request.src,
             axi_id=request.axi_id,
             local_addr=request.local_addr,
-            payload=b"",  # Write response has no data
+            payload=b"",
+            rob_idx=request.rob_idx,
             timestamp=timestamp,
         )
 
@@ -466,14 +569,14 @@ class PacketFactory:
     ) -> Packet:
         """Create a read response packet from a request."""
         return Packet(
-            packet_id=cls._next_packet_id(),
+            packet_id=request.rob_idx,
             packet_type=PacketType.READ_RESP,
-            src=request.dest,  # Response from original destination
-            dest=request.src,  # Response to original source
-            src_ni_id=request.src_ni_id,
+            src=request.dest,
+            dest=request.src,
             axi_id=request.axi_id,
             local_addr=request.local_addr,
             payload=data,
+            rob_idx=request.rob_idx,
             timestamp=timestamp,
         )
 
@@ -488,27 +591,18 @@ class PacketFactory:
         """
         Create a write response packet from routing info.
 
-        Used by MasterNI when it doesn't have the original request packet,
-        only the routing info from Per-ID FIFO.
-
-        Args:
-            src: Source coordinate (Master NI location).
-            dest: Destination coordinate (original Slave NI location).
-            axi_id: AXI transaction ID.
-            timestamp: Creation timestamp.
-
-        Returns:
-            Write response packet.
+        Used by MasterNI when it doesn't have the original request packet.
         """
+        rob_idx = cls._next_rob_idx()
         return Packet(
-            packet_id=cls._next_packet_id(),
+            packet_id=rob_idx,
             packet_type=PacketType.WRITE_RESP,
             src=src,
             dest=dest,
-            src_ni_id=0,
             axi_id=axi_id,
             local_addr=0,
             payload=b"",
+            rob_idx=rob_idx,
             timestamp=timestamp,
         )
 
@@ -524,27 +618,17 @@ class PacketFactory:
         """
         Create a read response packet from routing info.
 
-        Used by MasterNI when it doesn't have the original request packet,
-        only the routing info from Per-ID FIFO.
-
-        Args:
-            src: Source coordinate (Master NI location).
-            dest: Destination coordinate (original Slave NI location).
-            axi_id: AXI transaction ID.
-            data: Read data.
-            timestamp: Creation timestamp.
-
-        Returns:
-            Read response packet.
+        Used by MasterNI when it doesn't have the original request packet.
         """
+        rob_idx = cls._next_rob_idx()
         return Packet(
-            packet_id=cls._next_packet_id(),
+            packet_id=rob_idx,
             packet_type=PacketType.READ_RESP,
             src=src,
             dest=dest,
-            src_ni_id=0,
             axi_id=axi_id,
             local_addr=0,
             payload=data,
+            rob_idx=rob_idx,
             timestamp=timestamp,
         )

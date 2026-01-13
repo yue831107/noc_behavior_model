@@ -19,12 +19,16 @@ NOC_SIZE = 256
 NOC_PATTERN = sequential
 SEED = 42
 
+# Multi-parameter sweep settings
+SWEEP_BUFFER_DEPTH = 2,4,8,16
+
 # Phony targets
-.PHONY: help gen_payload gen_noc_payload sim_write sim_read sim_scatter sim_gather sim_all \
+.PHONY: help gen_payload gen_noc_payload gen_config gen_config_sweep \
+        sim_write sim_read sim_scatter sim_gather sim_all sim \
         sim_noc sim_noc_neighbor sim_noc_shuffle sim_noc_bit_reverse sim_noc_random sim_noc_transpose sim_noc_all \
-        test test_unit test_integration test_coverage test_performance test_theory test_consistency test_performance_report \
-        clean clean_payload clean_noc_payload all quick \
-        viz_heatmap viz_latency viz_throughput viz_curves viz_dashboard viz_all viz_save
+        test test_smoke test_fast test_unit test_integration test_coverage test_performance test_theory test_consistency test_performance_report \
+        clean clean_payload clean_noc_payload all quick viz multi_para \
+        regression regression_noc regression_quick test_regression
 
 # Default target
 help:
@@ -51,8 +55,21 @@ help:
 	@echo "[Visualization]"
 	@echo "  make viz                      Generate charts from latest sim"
 	@echo ""
+	@echo "[Multi-Parameter Sweep]"
+	@echo "  make gen_config_sweep         Generate config with sweep params"
+	@echo "  make multi_para               Run multi-parameter simulation"
+	@echo "  Options: SWEEP_BUFFER_DEPTH=2,4,8,16"
+	@echo ""
+	@echo "[Regression Test - Hardware Optimization]"
+	@echo "  make regression               Find optimal params (Host-to-NoC)"
+	@echo "  make regression_noc           Find optimal params (NoC-to-NoC)"
+	@echo "  make regression_quick         Quick search (early-stop)"
+	@echo "  make test_regression          Run regression module tests"
+	@echo ""
 	@echo "[Testing]"
 	@echo "  make test                     Run all pytest tests"
+	@echo "  make test_smoke               Quick smoke test (~10s)"
+	@echo "  make test_fast                Run all tests, stop on first failure"
 	@echo "  make test_unit                Unit tests only"
 	@echo "  make test_integration         Integration tests only"
 	@echo "  make test_performance         Performance validation tests"
@@ -83,6 +100,10 @@ TRANSFER_OUTPUT = examples/Host_to_NoC/config/generated.yaml
 
 gen_config:
 	$(PYTHON) tools/gen_transfer_config.py -n $(NUM_TRANSFERS) --mode $(TRANSFER_MODE) --min-size $(TRANSFER_MIN) --max-size $(TRANSFER_MAX) --seed $(SEED) -o $(TRANSFER_OUTPUT)
+
+# Generate config with sweep parameters
+gen_config_sweep:
+	$(PYTHON) tools/gen_transfer_config.py -n $(NUM_TRANSFERS) --mode $(TRANSFER_MODE) --min-size $(TRANSFER_MIN) --max-size $(TRANSFER_MAX) --seed $(SEED) -o $(TRANSFER_OUTPUT) --sweep-buffer-depth $(SWEEP_BUFFER_DEPTH)
 
 # Host-to-NoC Simulation (Specific Cases)
 sim_write:
@@ -131,6 +152,12 @@ sim_noc_all:
 test:
 	$(PYTHON) -m pytest tests/ -v
 
+test_smoke:
+	$(PYTHON) -m pytest tests/unit/test_router_port.py tests/unit/test_xy_routing.py tests/unit/test_flit.py -q
+
+test_fast:
+	$(PYTHON) -m pytest tests/ -x -q
+
 test_unit:
 	$(PYTHON) -m pytest tests/unit/ -v
 
@@ -177,8 +204,25 @@ quick: gen_payload sim_write
 viz:
 	$(PYTHON) -m src.visualization.report_generator all --from-metrics output/metrics/latest.json
 
-# Web Visualization
+# Multi-Parameter Simulation
+# Workflow: make gen_payload && make gen_config_sweep && make multi_para
+multi_para:
+	$(PYTHON) tools/run_multi_para.py --config $(TRANSFER_OUTPUT) --bin $(PAYLOAD_FILE) -o output/multi_para
 
+# Regression Test - Hardware Parameter Optimization
+# Searches parameter space to find optimal configuration for given targets
+REGRESSION_CONFIG = tools/regression_config.yaml
+REGRESSION_CONFIG_NOC = tools/regression_config_noc.yaml
+REGRESSION_OUTPUT = output/regression
 
+regression:
+	$(PYTHON) tools/run_regression.py --config $(REGRESSION_CONFIG) -o $(REGRESSION_OUTPUT)
 
+regression_noc:
+	$(PYTHON) tools/run_regression.py --config $(REGRESSION_CONFIG_NOC) -o $(REGRESSION_OUTPUT)/noc
 
+regression_quick:
+	$(PYTHON) tools/run_regression.py --config $(REGRESSION_CONFIG) -o $(REGRESSION_OUTPUT) --early-stop
+
+test_regression:
+	$(PYTHON) -m pytest tests/performance/test_regression.py -v

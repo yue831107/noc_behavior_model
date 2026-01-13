@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple, Callable
 from enum import Enum, auto
 
-from .flit import Flit, FlitType
+from .flit import Flit, AxiChannel, decode_node_id
 from .buffer import FlitBuffer, CreditFlowControl, PortBuffer, Link
 
 
@@ -73,10 +73,14 @@ class PipelineConfig:
     def enabled_stages(self) -> int:
         """Number of enabled stages."""
         count = 0
-        if self.rc_latency > 0: count += 1
-        if self.va_latency > 0: count += 1
-        if self.sa_latency > 0: count += 1
-        if self.st_latency > 0: count += 1
+        if self.rc_latency > 0:
+            count += 1
+        if self.va_latency > 0:
+            count += 1
+        if self.sa_latency > 0:
+            count += 1
+        if self.st_latency > 0:
+            count += 1
         return count
     
     @classmethod
@@ -709,8 +713,8 @@ class XYRouter:
         self._arbiter = WormholeArbiter()
 
         # Packet tracking for debugging
-        # Maps packet_id -> (input_port, flit_count_received, last_seq)
-        self._packet_state: Dict[int, Tuple[Direction, int, int]] = {}
+        # Maps (src_id, dst_id, rob_idx) -> (input_port, flit_count_received, last_seq)
+        self._packet_state: Dict[Tuple[int, int, int], Tuple[Direction, int, int]] = {}
         
         # === Pipeline Registers ===
         # Each pipeline stage holds flits in transit with remaining cycles
@@ -970,8 +974,8 @@ class XYRouter:
                             self.stats.flits_forwarded += 1
                             self.stats.port_utilization[out_dir] += 1
                         else:
-                            # Output blocked, stay in stage
-                            new_stage_contents.append((flit, in_dir, out_dir, 1))
+                            # Output blocked, stay in stage (stall at 0)
+                            new_stage_contents.append((flit, in_dir, out_dir, 0))
                     else:
                         # Move to next stage
                         next_stage_latency = self._active_stages[stage_idx + 1][1]
@@ -1039,20 +1043,26 @@ class XYRouter:
         return self.route_and_forward(current_time)
 
     def _update_packet_state_on_forward(self, flit: Flit, in_dir: Direction) -> None:
-        """Update packet tracking state after forwarding a flit."""
-        packet_id = flit.packet_id
+        """
+        Update packet tracking state after forwarding a flit.
+
+        Uses (src_id, dst_id, rob_idx) as packet key for FlooNoC format.
+        """
+        # Create packet key from header fields
+        hdr = flit.hdr
+        packet_key = (hdr.src_id, hdr.dst_id, hdr.rob_idx)
 
         if flit.is_head():
             # New packet
-            self._packet_state[packet_id] = (in_dir, 1, flit.seq_num)
-        elif packet_id in self._packet_state:
+            self._packet_state[packet_key] = (in_dir, 1, flit._seq_num)
+        elif packet_key in self._packet_state:
             # Update count
-            in_d, count, _ = self._packet_state[packet_id]
-            self._packet_state[packet_id] = (in_d, count + 1, flit.seq_num)
+            in_d, count, _ = self._packet_state[packet_key]
+            self._packet_state[packet_key] = (in_d, count + 1, flit._seq_num)
 
             if flit.is_tail():
                 # Packet complete, clean up
-                del self._packet_state[packet_id]
+                del self._packet_state[packet_key]
 
     def receive_flit(self, direction: Direction, flit: Flit) -> bool:
         """

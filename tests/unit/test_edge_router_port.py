@@ -12,13 +12,13 @@ Tests verify:
 import pytest
 from src.core.routing_selector import EdgeRouterPort
 from src.core.router import Direction, RouterPort, PortWire, EdgeRouter, RouterConfig
-from src.core.flit import Flit, FlitType, FlitFactory
+from src.core.flit import Flit, AxiChannel, FlitFactory
 
 
 @pytest.fixture(autouse=True)
 def reset_flit_counters():
-    """Reset packet/flit ID counters before each test."""
-    FlitFactory.reset_packet_id()
+    """Reset RoB index counter before each test."""
+    FlitFactory.reset()
     yield
 
 
@@ -42,25 +42,23 @@ def router_config() -> RouterConfig:
 
 @pytest.fixture
 def single_flit() -> Flit:
-    """Create a single flit for testing."""
-    return FlitFactory.create_single(
+    """Create a single flit for testing (AR request)."""
+    return FlitFactory.create_ar(
         src=(0, 1),
         dest=(2, 1),
-        is_request=True,
-        payload=b"test",
-        timestamp=0,
+        addr=0x1000,
+        axi_id=0,
     )
 
 
 @pytest.fixture
 def response_flit() -> Flit:
-    """Create a response flit for testing."""
-    return FlitFactory.create_single(
+    """Create a response flit for testing (B response)."""
+    return FlitFactory.create_b(
         src=(2, 1),
         dest=(0, 1),
-        is_request=False,
-        payload=b"resp",
-        timestamp=0,
+        axi_id=0,
+        resp=0,
     )
 
 
@@ -111,9 +109,8 @@ class TestEdgeRouterPortRequestSignals:
         edge_port.set_req_output(single_flit)
 
         # Try to set another output
-        flit2 = FlitFactory.create_single(
-            src=(0, 1), dest=(3, 1), is_request=True,
-            payload=b"test2", timestamp=0
+        flit2 = FlitFactory.create_ar(
+            src=(0, 1), dest=(3, 1), addr=0x2000, axi_id=1
         )
         success = edge_port.set_req_output(flit2)
 
@@ -166,9 +163,8 @@ class TestEdgeRouterPortResponseSignals:
         """update_resp_ready should clear ready when buffer full."""
         # Fill the buffer
         for _ in range(edge_port._buffer_depth):
-            flit = FlitFactory.create_single(
-                src=(2, 1), dest=(0, 1), is_request=False,
-                payload=b"resp", timestamp=0
+            flit = FlitFactory.create_b(
+                src=(2, 1), dest=(0, 1), axi_id=0, resp=0
             )
             edge_port._resp_port._buffer.push(flit)
 

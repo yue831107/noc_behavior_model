@@ -1,0 +1,87 @@
+# Regression Test Configuration
+#
+# This file defines the performance targets and parameter space
+# for hardware parameter optimization.
+#
+# Usage:
+#   py -3 tools/run_regression.py --config tools/regression_config.yaml
+#   py -3 tools/run_regression.py --config tools/regression_config.yaml --early-stop
+
+# Performance Target
+# The optimizer searches for hardware configurations that meet these constraints.
+target:
+  max_latency: 50          # Maximum acceptable latency (cycles)
+  min_throughput: 20       # Minimum acceptable throughput (bytes/cycle)
+
+  # Weighted scoring for ranking solutions
+  # Higher latency_weight = prefer lower latency over higher throughput
+  latency_weight: 0.5      # Weight for latency score [0, 1]
+  throughput_weight: 0.5   # Weight for throughput score [0, 1]
+
+  # Buffer utilization constraint (optional)
+  max_buffer_utilization: 0.9
+
+# Parameter Space
+# The optimizer searches through all combinations of these values.
+# Use theoretical bounds to prefilter infeasible combinations:
+#   - T_max = rows x 8 B/cycle (throughput upper bound)
+#   - L_min = max_hops + 2 cycles (latency lower bound)
+#
+# To fix a parameter, use a single-value list, e.g.:
+#   mesh_rows: [4]        # Fixed at 4 rows
+#   mesh_cols: [5]        # Fixed at 5 cols
+#   buffer_depth: [4, 8, 16, 32]  # Sweep these values
+#
+parameter_space:
+  mesh_rows: [4]                    # Fixed: 4 rows
+  mesh_cols: [5]                    # Fixed: 5 cols
+  buffer_depth: [4, 8, 16, 32]      # Sweep: buffer depth
+  max_outstanding: [8, 16, 32]      # Sweep: max outstanding
+  flit_width_bytes: 8               # Flit width (fixed for V1)
+
+# Workload Configuration
+# Defines the traffic pattern used for testing each parameter combination.
+#
+# For host_to_noc:
+#   - transfer_size: Size of each transfer (bytes)
+#   - num_transfers: Number of sequential transfers
+#
+# For noc_to_noc:
+#   - transfer_size: Size of each transfer (bytes)
+#   - traffic_pattern: neighbor, shuffle, bit_reverse, random, transpose
+#
+workload:
+  transfer_size: 1024      # Size of each transfer (bytes)
+  num_transfers: 50        # Number of transfers (host_to_noc only)
+  traffic_pattern: neighbor # Traffic pattern (noc_to_noc only)
+
+# System Type
+# "host_to_noc": Single entry via Routing Selector (measures Host -> Mesh -> NI)
+# "noc_to_noc": Direct node-to-node communication (measures Node -> Mesh -> Node)
+system_type: "host_to_noc"
+
+
+# Example: Smaller search space for quick testing
+# Uncomment below and comment out the full parameter_space above
+#
+# parameter_space:
+#   mesh_rows: [4, 6]
+#   mesh_cols: [5, 7]
+#   buffer_depth: [8, 16]
+#   max_outstanding: [16]
+#   flit_width_bytes: 8
+
+
+# ============================================================
+# Example: NoC-to-NoC Configuration
+# ============================================================
+# To test NoC-to-NoC mode, change the following:
+#
+# system_type: "noc_to_noc"
+#
+# workload:
+#   transfer_size: 256
+#   traffic_pattern: neighbor    # or: shuffle, bit_reverse, random, transpose
+#
+# The optimizer will measure node-to-node latency (pure Mesh performance)
+# instead of Host-to-NoC latency (includes Routing Selector overhead).

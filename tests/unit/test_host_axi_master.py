@@ -10,18 +10,18 @@ Tests:
 import pytest
 from typing import Optional
 
-from src.core.axi_master import (
+from src.testbench import (
     AXIIdConfig,
     AXIIdGenerator,
     AXIMasterController,
 )
-from src.core.host_axi_master import (
+from src.testbench import (
     HostAXIMaster,
     HostAXIMasterState,
     AXIChannelPort,
     AXIResponsePort,
 )
-from src.core.memory import HostMemory
+from src.testbench import HostMemory
 from src.core.routing_selector import V1System
 from src.config import TransferConfig, TransferMode
 
@@ -407,6 +407,330 @@ class TestV1SystemDMATransfer:
 
         # Master should have sent some AW transactions
         assert system.host_axi_master.stats.aw_sent >= 0
+
+
+class TestHostAXIMasterStats:
+    """Test HostAXIMasterStats throughput calculations."""
+
+    def test_effective_write_throughput_zero_cycles(self):
+        """Throughput should be 0 when total_cycles is 0."""
+        from src.testbench.host_axi_master import HostAXIMasterStats
+        stats = HostAXIMasterStats()
+        assert stats.effective_write_throughput == 0.0
+
+    def test_effective_write_throughput(self):
+        """Throughput should be b_received / total_cycles."""
+        from src.testbench.host_axi_master import HostAXIMasterStats
+        stats = HostAXIMasterStats()
+        stats.b_received = 10
+        stats.total_cycles = 100
+        assert stats.effective_write_throughput == 0.1
+
+    def test_effective_read_throughput_zero_cycles(self):
+        """Read throughput should be 0 when total_cycles is 0."""
+        from src.testbench.host_axi_master import HostAXIMasterStats
+        stats = HostAXIMasterStats()
+        assert stats.effective_read_throughput == 0.0
+
+    def test_effective_read_throughput(self):
+        """Read throughput should be r_received / total_cycles."""
+        from src.testbench.host_axi_master import HostAXIMasterStats
+        stats = HostAXIMasterStats()
+        stats.r_received = 20
+        stats.total_cycles = 200
+        assert stats.effective_read_throughput == 0.1
+
+
+class TestHostAXIMasterReset:
+    """Test HostAXIMaster reset functionality."""
+
+    @pytest.fixture
+    def host_memory(self):
+        """Create host memory."""
+        mem = HostMemory(size=4096)
+        mem.write(0, bytes(256))
+        return mem
+
+    @pytest.fixture
+    def transfer_config(self):
+        """Create transfer config."""
+        return TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+        )
+
+    def test_reset_clears_state(self, host_memory, transfer_config):
+        """reset() should clear all state."""
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=transfer_config,
+        )
+
+        master.start()
+        assert master.is_running is True
+
+        master.reset()
+        assert master.is_idle is True
+        assert master.is_running is False
+        assert master.stats.aw_sent == 0
+
+
+class TestHostAXIMasterQueue:
+    """Test HostAXIMaster multi-transfer queue functionality."""
+
+    @pytest.fixture
+    def host_memory(self):
+        """Create host memory."""
+        mem = HostMemory(size=4096)
+        mem.write(0, bytes(256))
+        return mem
+
+    def test_queue_transfer(self, host_memory):
+        """queue_transfer should add config to queue."""
+        config1 = TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1])
+        config2 = TransferConfig(src_addr=64, src_size=64, dst_addr=0x2000, target_nodes=[2])
+
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config1,
+        )
+
+        master.queue_transfer(config1)
+        master.queue_transfer(config2)
+
+        assert len(master._transfer_queue) == 2
+
+    def test_queue_transfers(self, host_memory):
+        """queue_transfers should add multiple configs."""
+        configs = [
+            TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1]),
+            TransferConfig(src_addr=64, src_size=64, dst_addr=0x2000, target_nodes=[2]),
+            TransferConfig(src_addr=128, src_size=64, dst_addr=0x3000, target_nodes=[3]),
+        ]
+
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=configs[0],
+        )
+
+        master.queue_transfers(configs)
+
+        assert len(master._transfer_queue) == 3
+
+    def test_start_queue_empty(self, host_memory):
+        """start_queue with empty queue should do nothing."""
+        config = TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1])
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        master.start_queue()  # Empty queue
+        assert master.is_idle is True
+
+    def test_queue_progress(self, host_memory):
+        """queue_progress should return (completed, total)."""
+        config = TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1])
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        master.queue_transfer(config)
+        master.queue_transfer(config)
+
+        completed, total = master.queue_progress
+        assert completed == 0
+        assert total == 2
+
+    def test_all_queue_transfers_complete_idle(self, host_memory):
+        """all_queue_transfers_complete should return True when idle."""
+        config = TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1])
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        assert master.all_queue_transfers_complete is True
+
+    def test_start_queue_with_callbacks(self, host_memory):
+        """start_queue should call on_transfer_start callback."""
+        config = TransferConfig(src_addr=0, src_size=64, dst_addr=0x1000, target_nodes=[1])
+
+        callback_calls = []
+        def on_start(idx, cfg):
+            callback_calls.append(('start', idx))
+
+        def on_complete(idx, cfg):
+            callback_calls.append(('complete', idx))
+
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+            on_transfer_start=on_start,
+            on_transfer_complete=on_complete,
+        )
+
+        master.queue_transfer(config)
+        master.start_queue()
+
+        assert ('start', 0) in callback_calls
+
+
+class TestHostAXIMasterReadMode:
+    """Test HostAXIMaster read mode."""
+
+    @pytest.fixture
+    def host_memory(self):
+        """Create host memory."""
+        mem = HostMemory(size=4096)
+        return mem
+
+    def test_configure_read(self, host_memory):
+        """configure_read should set read mode."""
+        config = TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+            transfer_mode=TransferMode.BROADCAST_READ,
+        )
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        golden = {(1, 0x1000): b'\x00' * 64}
+        master.configure_read(golden)
+
+        assert master._is_read_mode is True
+
+    def test_read_data_property(self, host_memory):
+        """read_data should return collected data."""
+        config = TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+        )
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        # Manually add test data
+        master._read_data[(1, 0x1000)] = b'test_data'
+
+        data = master.read_data
+        assert (1, 0x1000) in data
+        assert data[(1, 0x1000)] == b'test_data'
+
+
+class TestHostAXIMasterSummary:
+    """Test HostAXIMaster summary methods."""
+
+    @pytest.fixture
+    def host_memory(self):
+        """Create host memory."""
+        mem = HostMemory(size=4096)
+        mem.write(0, bytes(256))
+        return mem
+
+    @pytest.fixture
+    def transfer_config(self):
+        """Create transfer config."""
+        return TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+        )
+
+    def test_get_summary_write_mode(self, host_memory, transfer_config):
+        """get_summary should return write mode summary."""
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=transfer_config,
+        )
+
+        master.start()
+        summary = master.get_summary()
+
+        assert summary['mode'] == 'write'
+        assert 'state' in summary
+        assert 'progress' in summary
+        assert 'timing' in summary
+        assert 'axi_channels' in summary
+
+    def test_get_summary_read_mode(self, host_memory):
+        """get_summary should return read mode summary."""
+        config = TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+            transfer_mode=TransferMode.BROADCAST_READ,
+        )
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        master.configure_read({})
+        master.start()
+        summary = master.get_summary()
+
+        assert summary['mode'] == 'read'
+        assert 'ar_sent' in summary['axi_channels']
+        assert 'read_data_count' in summary
+
+    def test_print_summary_write_mode(self, host_memory, transfer_config, capsys):
+        """print_summary should output write mode stats."""
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=transfer_config,
+        )
+
+        master.start()
+        master.print_summary()
+
+        captured = capsys.readouterr()
+        assert "WRITE Mode" in captured.out
+        assert "AW Sent" in captured.out
+
+    def test_print_summary_read_mode(self, host_memory, capsys):
+        """print_summary should output read mode stats."""
+        config = TransferConfig(
+            src_addr=0,
+            src_size=64,
+            dst_addr=0x1000,
+            target_nodes=[1],
+            transfer_mode=TransferMode.BROADCAST_READ,
+        )
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=config,
+        )
+
+        master.configure_read({})
+        master.start()
+        master.print_summary()
+
+        captured = capsys.readouterr()
+        assert "READ Mode" in captured.out
+        assert "AR Sent" in captured.out
+
+    def test_controller_stats_property(self, host_memory, transfer_config):
+        """controller_stats should return internal stats."""
+        master = HostAXIMaster(
+            host_memory=host_memory,
+            transfer_config=transfer_config,
+        )
+
+        stats = master.controller_stats
+        assert stats is not None
 
 
 class TestAXIMasterControllerWithIdGenerator:

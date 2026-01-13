@@ -8,7 +8,8 @@ Each snapshot captures the state of the mesh at a specific cycle.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Union, TYPE_CHECKING
+from typing import Dict, List, Tuple, Optional, Union, Any, TYPE_CHECKING
+import statistics
 import numpy as np
 
 if TYPE_CHECKING:
@@ -72,9 +73,8 @@ class MetricsCollector:
         self._last_completed = 0
         self._last_bytes = 0
 
-        # Register packet arrival callback for latency tracking
-        if hasattr(system, 'set_packet_arrival_callback'):
-            system.set_packet_arrival_callback(self._on_packet_arrived)
+        # Latency tracking: key -> injection_cycle
+        self._injection_log: Dict[Any, int] = {}
 
     def _on_packet_arrived(self, packet_id: int, creation_time: int, arrival_time: int) -> None:
         """
@@ -119,7 +119,7 @@ class MetricsCollector:
         Returns:
             SimulationSnapshot if captured, None if skipped due to interval.
         """
-        from ..core.metrics_provider import get_metrics_from_system
+        from ..verification.metrics_provider import get_metrics_from_system
         
         # Get metrics via Protocol or fallback
         metrics = get_metrics_from_system(self.system)
@@ -305,13 +305,117 @@ class MetricsCollector:
     def add_latency_sample(self, latency: int) -> None:
         """
         Add a latency sample to the current/latest snapshot.
-        
+
         Args:
             latency: Transaction latency in cycles.
         """
         if self.snapshots:
             self.snapshots[-1].latencies.append(latency)
-    
+
+    # =========================================================================
+    # Latency Tracking (Monitor-Based)
+    # =========================================================================
+
+    def record_injection(self, key: Any, cycle: int) -> None:
+        """
+        Record packet/transfer injection time.
+
+        Call this when a packet or transfer is initiated (e.g., when submitting
+        a write request or when a node starts its transfer).
+
+        Args:
+            key: Unique identifier for the transfer (e.g., axi_id, node_id).
+            cycle: The cycle when injection occurred.
+        """
+        self._injection_log[key] = cycle
+
+    def record_ejection(self, key: Any, cycle: int) -> None:
+        """
+        Record packet/transfer ejection time and calculate latency.
+
+        Call this when a packet or transfer completes (e.g., when receiving
+        a B response or when a node finishes its transfer).
+
+        Automatically calculates latency = ejection_cycle - injection_cycle
+        and adds it to the latency samples.
+
+        Args:
+            key: Unique identifier matching a previous record_injection call.
+            cycle: The cycle when ejection occurred.
+        """
+        if key in self._injection_log:
+            latency = cycle - self._injection_log[key]
+            self.add_latency_sample(latency)
+            del self._injection_log[key]
+
+    # =========================================================================
+    # Summary Statistics
+    # =========================================================================
+
+    def get_throughput(self, start_cycle: int = 0) -> float:
+        """
+        Calculate overall throughput (bytes/cycle).
+
+        Args:
+            start_cycle: Starting cycle for calculation (default: 0).
+
+        Returns:
+            Throughput in bytes/cycle.
+        """
+        if not self.snapshots:
+            return 0.0
+
+        end_snapshot = self.snapshots[-1]
+        total_bytes = end_snapshot.bytes_transferred
+        total_cycles = end_snapshot.cycle - start_cycle
+
+        return total_bytes / total_cycles if total_cycles > 0 else 0.0
+
+    def get_latency_stats(self) -> Dict[str, float]:
+        """
+        Calculate latency statistics.
+
+        Returns:
+            Dict with keys: min, max, avg, std, samples.
+        """
+        latencies = self.get_all_latencies()
+
+        if not latencies:
+            return {'min': 0, 'max': 0, 'avg': 0.0, 'std': 0.0, 'samples': 0}
+
+        return {
+            'min': min(latencies),
+            'max': max(latencies),
+            'avg': statistics.mean(latencies),
+            'std': statistics.stdev(latencies) if len(latencies) > 1 else 0.0,
+            'samples': len(latencies),
+        }
+
+    def get_buffer_stats(self, total_capacity: int = 400) -> Dict[str, float]:
+        """
+        Calculate buffer utilization statistics.
+
+        Args:
+            total_capacity: Total buffer capacity in flits.
+                           Default: 20 routers × 4 depth × 5 ports = 400.
+
+        Returns:
+            Dict with keys: peak, avg, utilization.
+        """
+        occupancies = [s.flits_in_flight for s in self.snapshots]
+
+        if not occupancies:
+            return {'peak': 0, 'avg': 0.0, 'utilization': 0.0}
+
+        peak = max(occupancies)
+        avg = statistics.mean(occupancies)
+
+        return {
+            'peak': peak,
+            'avg': avg,
+            'utilization': avg / total_capacity if total_capacity > 0 else 0.0,
+        }
+
     def get_per_router_stats(self) -> Dict[Tuple[int, int], Dict]:
         """
         Get statistics per router from latest snapshot.
@@ -334,11 +438,12 @@ class MetricsCollector:
         return stats
     
     def clear(self) -> None:
-        """Clear all collected snapshots."""
+        """Clear all collected snapshots and latency tracking."""
         self.snapshots.clear()
         self._last_capture_cycle = -1
         self._last_completed = 0
         self._last_bytes = 0
+        self._injection_log.clear()
 
     def __len__(self) -> int:
         """Number of snapshots collected."""
@@ -398,7 +503,8 @@ class MetricsCollector:
         collector._last_bytes = 0
         collector._mesh_cols = data.get('mesh_cols', 5)
         collector._mesh_rows = data.get('mesh_rows', 4)
-        
+        collector._injection_log = {}
+
         # Override mesh property for loaded data
         collector.snapshots = []
         

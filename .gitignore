@@ -32,6 +32,7 @@ env/
 *.swp
 *.swo
 *~
+*.code-workspace
 
 # OS
 .DS_Store
@@ -58,9 +59,15 @@ FlooNoC/
 
 # Claude Code local settings
 .claude/
+tmpclaude-*
+
+# Temporary files
+*.tmp
+*.bak
 
 # Generated simulation artifacts
 generated.yaml
 *.hex
 examples/Host_to_NoC/payload/
+examples/Host_to_NoC/data/
 examples/NoC_to_NoC/payload/

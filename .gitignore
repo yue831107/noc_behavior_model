@@ -54,9 +54,6 @@ outputs/
 # Jupyter
 .ipynb_checkpoints/
 
-# External references
-FlooNoC/
-
 # Claude Code local settings (keep agents, commands, skills, settings.json)
 .claude/settings.local.json
 tmpclaude-*

@@ -34,6 +34,7 @@
 | 12 | [效能指標](12_metrics.md) | Stats 類別、統計收集 |
 | 13 | [設計決策](13_design_decisions.md) | 架構選擇、Flow Control 設計 |
 | 14 | [效能驗證框架](14_performance_validation.md) | 驗證策略、Baseline 格式 |
+| 15 | [Physical Channel 架構比較](15_physical_channel_modes.md) | General vs AXI Mode、Trade-off |
 
 ### 附錄
 

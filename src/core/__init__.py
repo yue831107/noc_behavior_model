@@ -31,6 +31,7 @@ from .packet import (
 )
 from .router import (
     Direction,
+    ChannelMode,
     PipelineConfig,
     RouterConfig,
     RouterStats,
@@ -42,6 +43,12 @@ from .router import (
     EdgeRouter,
     PortWire,
     create_router,
+)
+from .channel_mode_strategy import (
+    ChannelModeStrategy,
+    GeneralModeStrategy,
+    AXIModeStrategy,
+    get_channel_mode_strategy,
 )
 from .ni import (
     NIConfig,
@@ -136,6 +143,7 @@ __all__ = [
     "PacketFactory",
     # Router
     "Direction",
+    "ChannelMode",
     "PipelineConfig",
     "RouterConfig",
     "RouterStats",
@@ -147,6 +155,11 @@ __all__ = [
     "EdgeRouter",
     "PortWire",
     "create_router",
+    # Channel Mode Strategy
+    "ChannelModeStrategy",
+    "GeneralModeStrategy",
+    "AXIModeStrategy",
+    "get_channel_mode_strategy",
     # NI
     "NIConfig",
     "NIStats",

@@ -64,6 +64,8 @@ from .mesh import (
 from .routing_selector import (
     RoutingSelectorConfig,
     SelectorStats,
+    EdgeRouterPort,
+    AXIModeEdgeRouterPort,
     RoutingSelector,
     V1System,
     NoCSystem,
@@ -162,6 +164,8 @@ __all__ = [
     # Routing Selector
     "RoutingSelectorConfig",
     "SelectorStats",
+    "EdgeRouterPort",
+    "AXIModeEdgeRouterPort",
     "RoutingSelector",
     "V1System",
     "NoCSystem",
